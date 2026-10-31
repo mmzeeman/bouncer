@@ -9,9 +9,9 @@ all() -> [connect, rpc_roundtrip, message_exchange].
 
 init_per_suite(Config) ->
     os:cmd("epmd -daemon"),
-    %% peer requires the controlling node to be alive (default tcp dist is fine here).
+    %% peer requires the controlling node to be alive (default tcp dist is fine here); use 127.0.0.1 to avoid hostname resolution.
     case node() of
-        nonode@nohost -> {ok, _} = net_kernel:start([bouncer_ct, shortnames]);
+        nonode@nohost -> {ok, _} = net_kernel:start(['bouncer_ct@127.0.0.1', longnames]);
         _ -> ok
     end,
     {ok, PeerA, NodeA} = start_peer(bouncer_a),
@@ -64,6 +64,8 @@ start_peer(Name) ->
     Pa = lists:append([["-pa", P] || P <- code:get_path()]),
     {ok, Peer, Node} = peer:start(#{
         name => peer:random_name(atom_to_list(Name)),
-        args => ["-proto_dist", "bouncer", "-start_epmd", "false"] ++ Pa
+        host => "127.0.0.1",
+        args => ["-proto_dist", "bouncer", "-start_epmd", "false",
+                 "-kernel", "inet_dist_use_interface", "{127,0,0,1}"] ++ Pa
     }),
     {ok, Peer, Node}.
