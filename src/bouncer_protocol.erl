@@ -707,11 +707,8 @@ rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk) ->
     end.
 
 rx_rekey(R, _Len, Flags, Ev) when Flags band ?F_REKEY =/= 0 ->
-    try enoise_cipher_state:rekey(R#rx.cs) of
-        CS -> {ok, Ev, R#rx{cs = CS, since = 0}}
-    catch
-        _:_ -> {error, rekey_unsupported}
-    end;
+    CS = enoise_cipher_state:rekey(R#rx.cs),
+    {ok, Ev, R#rx{cs = CS, since = 0}};
 rx_rekey(#rx{since = Since} = R, Len, _Flags, Ev) ->
     {ok, Ev, R#rx{since = Since + Len}}.
 

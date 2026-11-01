@@ -133,21 +133,6 @@ complete distribution message (`erts/emulator/beam/dist.c`), so the receiver
 needs the sender's packet boundaries: `last` marks them, and every
 `{packet, Iodata}` event is one `dist_ctrl_put_data/2` call.
 
-Rekeying uses the Noise `Rekey()` key derivation (`enoise_crypto:rekey/2`,
-first 32 bytes). enoise's own `enoise_cipher_state:rekey/1` is broken for
-AESGCM (48-byte key), so the nonce restarts at 0 with the new key instead.
-Reserved bits 5-7 may later carry a stream id; nothing is implemented.
-
-**TODO (enoise):** In `enoise_crypto:rekey/2`, truncate the AESGCM result of
-encrypting 32 zero bytes at the maximum nonce to the first 32 bytes, just as
-the ChaChaPoly clause already does. AESGCM currently returns the full
-48-byte ciphertext-plus-tag as a key, causing the next AESGCM operation to
-fail with an invalid key size. Add a regression test asserting that rekeying
-either cipher produces a 32-byte key and that encryption with the rekeyed
-state succeeds. Once this fix is released, update bouncer to use
-`enoise_cipher_state:rekey/1` and remove the local workaround and nonce-reset
-behavior in `bouncer_protocol:rekey_cs/1`.
-
 ### API
 
 ```erlang
