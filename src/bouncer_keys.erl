@@ -146,39 +146,21 @@ env(Key) ->
 %% The local node name, needed for default directories by functions that
 %% have no NodeName argument. TODO: confirm how check_peer/3, add_peer/3 and
 %% remove_peer/3 should learn the local node name; for now: Opts `node_name`,
-%% then -name/-sname, then node().
+%% then node().
 local_name(Opts) ->
     case maps:find(node_name, Opts) of
         {ok, N} ->
             N;
         error ->
-            case local_node_name() of
-                {ok, N} -> N;
-                error -> atom_to_list(node())
-            end
+            local_node_name()
     end.
 
-%% TODO: with `-name foo` (no host) the host is the short hostname, not the FQDN.
 local_node_name() ->
-    case init_name(name) of
-        {ok, _} = R -> R;
-        error -> init_name(sname)
-    end.
-
-init_name(Flag) ->
-    case init:get_argument(Flag) of
-        {ok, [[Name | _] | _]} ->
-            case lists:member($@, Name) of
-                true ->
-                    {ok, Name};
-                false ->
-                    case inet:gethostname() of
-                        {ok, Host} -> {ok, Name ++ "@" ++ Host};
-                        _ -> error
-                    end
-            end;
-        _ ->
-            error
+    case node() of
+        nonode@nohost ->
+            erlang:error(distribution_not_started);
+        Node ->
+            atom_to_list(Node)
     end.
 
 dirs_for(Opts) ->
@@ -325,17 +307,13 @@ fingerprint to stderr. Never generates a key. Halts with status 1 on error.
 """.
 -spec print_public() -> ok.
 print_public() ->
-    case local_node_name() of
-        {ok, Name} ->
-            case load_or_generate(Name, #{generate => false}) of
-                {ok, #{public := Pub, fingerprint := Fp}} ->
-                    io:put_chars(authorized_line(Name, Pub)),
-                    io:format(standard_error, "~ts~n", [Fp]);
-                {error, Reason} ->
-                    fail("cannot load key: ~p", [Reason])
-            end;
-        error ->
-            fail("node name unknown: start with -name or -sname", [])
+    Name = local_node_name(),
+    case load_or_generate(Name, #{generate => false}) of
+        {ok, #{public := Pub, fingerprint := Fp}} ->
+            io:put_chars(authorized_line(Name, Pub)),
+            io:format(standard_error, "~ts~n", [Fp]);
+        {error, Reason} ->
+            fail("cannot load key: ~p", [Reason])
     end.
 
 fail(Fmt, Args) ->
