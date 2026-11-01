@@ -93,9 +93,96 @@ To migrate suites without interrupting connectivity:
 3. Remove the old suite from `accept_suites` after all nodes have switched.
 
 
+## Transport framing: frame format, flags, policies, defaults
+
+After the handshake, `bouncer_protocol` provides pure functions (no sockets,
+processes or application env) that turn dist packets into encrypted frames and
+back, using the two enoise cipher states of the handshake. The carrier,
+backpressure and tick timers are not part of this.
+
+### Frame format
+
+All integers are big-endian.
+
+```erlang
+%% wire
+<<CipherLen:16, Ciphertext:CipherLen/binary>>   %% CipherLen 17..65535
+%% plaintext inside the AEAD (associated data = the 2-byte CipherLen)
+<<Flags:8, Rest/binary>>
+```
+
+The smallest frame is 1 flags byte plus the 16-byte tag, so the maximum
+plaintext is 65519 bytes, and 65518 bytes of payload in an unpadded frame.
+
+| Bit | Flag | Meaning |
+|---:|---|---|
+| 0 | `last` | last chunk of one dist packet |
+| 1 | `tick` | keepalive; empty payload, no `comp`/`last` |
+| 2 | `comp` | payload is the raw deflate of the original chunk |
+| 3 | `pad` | `Rest = <<PadLen:16, Payload/binary, 0:PadLen/unit:8>>` instead of `Payload` |
+| 4 | `rekey` | sender rekeys its send key after this frame; receiver rekeys its receive key after decrypting it |
+| 5-7 | reserved | MUST be 0; a receiver closes on any set bit |
+
+Sender order: split into chunks, compress each chunk, pad, encrypt. The frames
+of one packet are contiguous on the wire (ticks may be interleaved).
+The receiver requires `PadLen` to fit in the body (and zero padding bytes).
+A dist packet is never empty (an empty one is a tick).
+
+`erlang:dist_ctrl_put_data/2` hands exactly one call's data to the VM as one
+complete distribution message (`erts/emulator/beam/dist.c`), so the receiver
+needs the sender's packet boundaries: `last` marks them, and every
+`{packet, Iodata}` event is one `dist_ctrl_put_data/2` call.
+
+Rekeying uses the Noise `Rekey()` key derivation (`enoise_crypto:rekey/2`,
+first 32 bytes). enoise's own `enoise_cipher_state:rekey/1` is broken for
+AESGCM (48-byte key), so the nonce restarts at 0 with the new key instead.
+Reserved bits 5-7 may later carry a stream id; nothing is implemented.
+
+**TODO:** Track an upstream enoise fix for `enoise_cipher_state:rekey/1` with
+AESGCM: it must return a valid 32-byte key. Once released, update bouncer to
+use the corrected API and remove the local workaround and nonce-reset behavior
+in `bouncer_protocol:rekey_cs/1`.
+
+### API
+
+```erlang
+S0 = bouncer_protocol:new_sender(TxCipherState, SenderPolicy),
+R0 = bouncer_protocol:new_receiver(RxCipherState, ReceiverPolicy),
+P0 = bouncer_protocol:tx_packet(IoData),
+{Frame, S1, more, P1} = bouncer_protocol:tx_next(S0, P0),   %% one frame per call
+{Frame, S2, done}     = bouncer_protocol:tx_next(S1, P1),
+{Frame, S3}           = bouncer_protocol:tx_tick(S2),
+{ok, Events, R1}      = bouncer_protocol:rx_feed(R0, Bytes),  %% {packet, Iodata} | tick
+{error, Reason, Dead} = bouncer_protocol:rx_feed(R1, Bytes).  %% close the connection
+```
+
+Errors: `decrypt_failed`, `bad_length`, `reserved_flags`, `tick_with_payload`,
+`bad_padding`, `compression_not_accepted`, `bad_compression`,
+`packet_too_large`, `rekey_required`, `rekey_unsupported`. A receiver that
+returned an error refuses all further input.
+
+### Policies and defaults
+
+Settings are layered, highest first: Opts > `-bouncer` flag > env > default
+(`bouncer_protocol:sender_policy/1` and `receiver_policy/1` take the layers as
+maps; invalid values are rejected with an error naming the allowed values).
+
+| Setting | Values | Default | Flag example |
+|---|---|---|---|
+| `chunk_size` | 1..65518 | 16384 | `-bouncer chunk_size 16384` |
+| `padding` | `none`, `{bucket, N}` (round the plaintext up to a multiple of N, N <= 65519), `{fixed, N}` (every frame plaintext is N bytes, 4 <= N <= 65519; chunks are capped at N-3) | `none` | `-bouncer padding bucket:512` |
+| `compression` | `none`, `{zlib, MinSize}` (chunks of at least MinSize bytes, only used if strictly smaller) | `none` | `-bouncer compression zlib:256` |
+| `rekey_after` | `never` or any of `{frames, N}`, `{bytes, B}`, `{ms, T}` | `[{bytes, 1073741824}]` | `-bouncer rekey_after bytes:1073741824,ms:3600000` |
+| `max_packet` (receiver) | bytes of one reassembled packet; checked while reassembling | 67108864 | `-bouncer max_packet N` |
+| `accept_compression` (receiver) | `true`/`false` | `false` | `-bouncer accept_compression true` |
+| `max_bytes_without_rekey` (receiver) | integer or `infinity` | `infinity` | |
+
+Padded frames are always accepted. Ticks are padded like data. Inflation is
+incremental with a hard 65518 byte limit. Keep compression off when
+attacker-chosen data is mixed with secrets (CRIME/BREACH).
+
 The distribution callback currently delegates to `inet_tcp_dist`; this
 handshake protocol is not yet connected to the distribution transport.
 
 Note: `bounce_dist` currently delegates to `inet_tcp_dist`; the Noise
 transport is still to be implemented.
-
