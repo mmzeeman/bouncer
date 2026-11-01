@@ -11,27 +11,26 @@ suite_mapping_test_() ->
      ?_assertEqual(aesgcm_blake2b, bouncer_protocol:suite_atom(4))].
 
 noise_names_test_() ->
-    [{atom_to_list(Suite),
-      ?_assertEqual(Name, bouncer_protocol:noise_name(Suite))}
+    [{atom_to_list(Suite), ?_assertEqual(Name, bouncer_protocol:noise_name(Suite))}
      || {Suite, Name} <- [
-         {chachapoly_blake2b, <<"Noise_XX_25519_ChaChaPoly_BLAKE2b">>},
-         {aesgcm_sha512, <<"Noise_XX_25519_AESGCM_SHA512">>},
-         {aesgcm_sha256, <<"Noise_XX_25519_AESGCM_SHA256">>},
-         {aesgcm_blake2b, <<"Noise_XX_25519_AESGCM_BLAKE2b">>}
-     ]].
+                          {chachapoly_blake2b, <<"Noise_XX_25519_ChaChaPoly_BLAKE2b">>},
+                          {aesgcm_sha512, <<"Noise_XX_25519_AESGCM_SHA512">>},
+                          {aesgcm_sha256, <<"Noise_XX_25519_AESGCM_SHA256">>},
+                          {aesgcm_blake2b, <<"Noise_XX_25519_AESGCM_BLAKE2b">>}
+                         ]].
 
 hello_roundtrip_test_() ->
     [?_test(begin
-        Id = bouncer_protocol:suite_id(Suite),
-        Msg1 = binary:copy(<<Id>>, 32),
-        Hello = bouncer_protocol:hello(Id, Msg1),
-        Header = binary:part(Hello, 0, 8),
-        ?assertEqual(bouncer_protocol:hello_header(Id), Header),
-        ?assertEqual({ok, Suite, 32},
-                     bouncer_protocol:parse_hello_header(Header, [Id])),
-        ?assertEqual(Msg1, binary:part(Hello, 8, 32)),
-        ?assert(is_binary(bouncer_protocol:noise_name(Suite)))
-    end) || Suite <- bouncer_protocol:known_suites()].
+                Id = bouncer_protocol:suite_id(Suite),
+                Msg1 = binary:copy(<<Id>>, 32),
+                Hello = bouncer_protocol:hello(Id, Msg1),
+                Header = binary:part(Hello, 0, 8),
+                ?assertEqual(bouncer_protocol:hello_header(Id), Header),
+                ?assertEqual({ok, Suite, 32},
+                             bouncer_protocol:parse_hello_header(Header, [Id])),
+                ?assertEqual(Msg1, binary:part(Hello, 8, 32)),
+                ?assert(is_binary(bouncer_protocol:noise_name(Suite)))
+            end) || Suite <- bouncer_protocol:known_suites()].
 
 unsupported_suite_test_() ->
     [?_assertEqual({reject, 2},
@@ -41,8 +40,29 @@ unsupported_suite_test_() ->
 unknown_suite_test_() ->
     [?_assertEqual({reject, 2},
                    bouncer_protocol:parse_hello_header(
-                       <<"BNCR", 1, Id, 32:16>>, [1, 2, 3, 4]))
+                     <<"BNCR", 1, Id, 32:16>>, [1, 2, 3, 4]))
      || Id <- [0, 5, 255]].
+
+
+parse_header_test() ->
+    %% version
+    ?assertEqual({reject, 1}, bouncer_protocol:parse_hello_header(<<"BNCR", 0, 2, 32:16>>, [2])),
+    ?assertEqual({reject, 1}, bouncer_protocol:parse_hello_header(<<"BNCR", 2, 2, 32:16>>, [2])),
+    ?assertEqual({reject, 1}, bouncer_protocol:parse_hello_header(<<"BNCR", 255, 9, 0:16>>, [2])),
+    %% suite
+    ?assertEqual({reject, 2}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 0, 32:16>>, [2])),
+    ?assertEqual({reject, 2}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 5, 32:16>>, [2])),
+    ?assertEqual({reject, 2}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 1, 32:16>>, [2])),   % known, not accepted
+    %% length
+    ?assertEqual({ok, aesgcm_sha512, 32}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 2, 32:16>>, [2])),
+    [?assertEqual({error, bad_hello_header}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 2, L:16>>, [2]))
+     || L <- [0, 31, 33, 65535]],
+    %% framing
+    ?assertEqual({error, bad_hello_header}, bouncer_protocol:parse_hello_header(<<"XNCR", 1, 2, 32:16>>, [2])),
+    ?assertEqual({error, bad_hello_header}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 2, 32>>, [2])),
+    ?assertEqual({error, bad_hello_header}, bouncer_protocol:parse_hello_header(<<>>, [2])),
+    %% accept list accepting an id outside 1..4 must not make that id valid
+    ?assertEqual({reject, 2}, bouncer_protocol:parse_hello_header(<<"BNCR", 1, 9, 32:16>>, [9, 2])).
 
 prologue_vector_test() ->
     Header = <<16#42, 16#4e, 16#43, 16#52, 1, 2, 0, 32>>,
@@ -54,24 +74,20 @@ prologue_binds_header_and_target_test() ->
     Header = bouncer_protocol:hello_header(2),
     Target = <<"bob@host">>,
     Prologue = bouncer_protocol:prologue(Header, Target),
-    [?assertNotEqual(Prologue,
-                     bouncer_protocol:prologue(flip_byte(Header, Index), Target))
-     || Index <- lists:seq(0, 7)],
-    [?assertNotEqual(Prologue,
-                     bouncer_protocol:prologue(Header, flip_byte(Target, Index)))
-     || Index <- lists:seq(0, byte_size(Target) - 1)].
+    [?assertNotEqual(Prologue, bouncer_protocol:prologue(flip_byte(Header, Index), Target)) || Index <- lists:seq(0, 7)],
+    [?assertNotEqual(Prologue, bouncer_protocol:prologue(Header, flip_byte(Target, Index))) || Index <- lists:seq(0, byte_size(Target) - 1)].
 
 hello_header_matches_prologue_input_test() ->
     lists:foreach(fun(Id) ->
-        Header = bouncer_protocol:hello_header(Id),
-        Hello = bouncer_protocol:hello(Id, binary:copy(<<0>>, 32)),
-        ?assertEqual(Header, binary:part(Hello, 0, 8))
-    end, lists:seq(1, 4)).
+                          Header = bouncer_protocol:hello_header(Id),
+                          Hello = bouncer_protocol:hello(Id, binary:copy(<<0>>, 32)),
+                          ?assertEqual(Header, binary:part(Hello, 0, 8))
+                  end,
+                  lists:seq(1, 4)).
 
 wire_frames_test() ->
     Msg2 = <<1, 2, 3>>,
-    ?assertEqual(<<"BNCR", 1, 0, 0, 3, Msg2/binary>>,
-                 bouncer_protocol:reply_ok(Msg2)),
+    ?assertEqual(<<"BNCR", 1, 0, 0, 3, Msg2/binary>>, bouncer_protocol:reply_ok(Msg2)),
     ?assertEqual(<<"BNCR", 1, 1, 0, 0>>, bouncer_protocol:reply_reject(1)),
     ?assertEqual(<<"BNCR", 1, 2, 0, 0>>, bouncer_protocol:reply_reject(2)),
     Msg3 = <<4, 5>>,

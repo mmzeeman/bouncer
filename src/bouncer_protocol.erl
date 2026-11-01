@@ -73,23 +73,25 @@ hello(SuiteId, Msg1) when is_binary(Msg1), byte_size(Msg1) =:= ?MSG1_LENGTH ->
     <<(hello_header(SuiteId))/binary, Msg1/binary>>.
 
 -spec parse_hello_header(binary(), [byte()]) ->
-          {ok, suite(), 32} | {reject, 2} | {error, bad_hello_header}.
-parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds) ->
-    case SuiteId >= 1 andalso SuiteId =< 4 of
+          {ok, suite(), 32} | {reject, 1} | {reject, 2} | {error, bad_hello_header}.
+parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
+  when SuiteId >= 1 andalso SuiteId =< 4
+       andalso is_list(AcceptedIds) ->
+    case lists:member(SuiteId, AcceptedIds) of
         false ->
             {reject, 2};
-        true when not is_list(AcceptedIds) ->
-            {error, bad_hello_header};
+        true when Msg1Len =:= ?MSG1_LENGTH ->
+            {ok, suite_atom(SuiteId), Msg1Len};
         true ->
-            case lists:member(SuiteId, AcceptedIds) of
-                false ->
-                    {reject, 2};
-                true when Msg1Len =:= ?MSG1_LENGTH ->
-                    {ok, suite_atom(SuiteId), Msg1Len};
-                true ->
-                    {error, bad_hello_header}
-            end
+            {error, bad_hello_header}
     end;
+parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
+  when is_list(AcceptedIds) ->
+    %% Unsupported suite id.
+    {reject, 2};
+parse_hello_header(<<"BNCR", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
+  when Version =/= ?VERSION ->
+    {reject, 1};
 parse_hello_header(_, _) ->
     {error, bad_hello_header}.
 
