@@ -85,13 +85,13 @@ parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
         true ->
             {error, bad_hello_header}
     end;
+parse_hello_header(<<"BNCR", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
+  when Version =/= ?VERSION ->
+    {reject, 1};
 parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
   when is_list(AcceptedIds) ->
     %% Unsupported suite id.
     {reject, 2};
-parse_hello_header(<<"BNCR", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
-  when Version =/= ?VERSION ->
-    {reject, 1};
 parse_hello_header(_, _) ->
     {error, bad_hello_header}.
 
@@ -154,11 +154,7 @@ limits() ->
 %%    kept). BUT it is broken for 'AESGCM': enoise_crypto:rekey/2 only truncates
 %%    for 'ChaChaPoly', so with AESGCM (our default suite) the new key is 48
 %%    bytes long (ciphertext + tag) and the next encrypt crashes with badarg.
-%%    rekey_cs/1 below therefore calls enoise_crypto:rekey/2 itself, keeps the
-%%    first 32 bytes, and installs the key with enoise_cipher_state:set_key/2,
-%%    which resets the nonce to 0. That is safe (the key is fresh) and, being
-%%    deterministic on both sides, interoperates between bouncer peers. It is
-%%    not byte-identical to the Noise spec Rekey() for nonce handling.
+%%    That is why my personal enoise fork, with the fix for rekey, is used.
 %%
 %% What the OTP docs and source say about packet boundaries
 %% (erts/doc/guides/alt_dist.md, erlang:dist_ctrl_get_data/1,
@@ -549,13 +545,16 @@ emit(#tx{padding = Padding} = S, Flags0, Payload) ->
     Len = 1 + byte_size(Body) + ?TAG_LEN,
     Now = rekey_clock(S),
     Rekey = rekey_due(S, Len, Now),
-    Flags = case Rekey of true -> Flags1 bor ?F_REKEY; false -> Flags1 end,
+    Flags = case Rekey of
+                true -> Flags1 bor ?F_REKEY;
+                false -> Flags1
+            end,
     {ok, CS1, Cipher} = encrypt(S#tx.cs, <<Len:16>>, <<Flags, Body/binary>>),
     Len = byte_size(Cipher),
     Frame = [<<Len:16>>, Cipher],
     case Rekey of
         true ->
-            {Frame, S#tx{cs = rekey_cs(CS1), frames = 0, bytes = 0, t0 = Now}};
+            {Frame, S#tx{cs = enoise_cipher_state:rekey(CS1), frames = 0, bytes = 0, t0 = Now}};
         false ->
             {Frame, S#tx{cs = CS1, frames = S#tx.frames + 1, bytes = S#tx.bytes + Len}}
     end.
@@ -591,12 +590,6 @@ rekey_due(#tx{rekey_after = Limits, frames = Frames, bytes = Bytes, t0 = T0}, Le
                  ({bytes, B}) -> Bytes + Len >= B;
                  ({ms, T}) -> Now - T0 >= T
               end, Limits).
-
-%% See the note at the top of the section about enoise rekey and AESGCM.
--spec rekey_cs(enoise_cipher_state:state()) -> enoise_cipher_state:state().
-rekey_cs(CS) ->
-    Key = enoise_crypto:rekey(enoise_cipher_state:cipher(CS), enoise_cipher_state:key(CS)),
-    enoise_cipher_state:set_key(CS, binary:part(Key, 0, 32)).
 
 %%% ------------------------------------------------------------------
 %%% Receiver
@@ -714,7 +707,7 @@ rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk) ->
     end.
 
 rx_rekey(R, _Len, Flags, Ev) when Flags band ?F_REKEY =/= 0 ->
-    try rekey_cs(R#rx.cs) of
+    try enoise_cipher_state:rekey(R#rx.cs) of
         CS -> {ok, Ev, R#rx{cs = CS, since = 0}}
     catch
         _:_ -> {error, rekey_unsupported}
