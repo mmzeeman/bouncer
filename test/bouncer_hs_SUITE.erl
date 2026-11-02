@@ -133,7 +133,8 @@ responder_rejects_denied_initiator(Config) ->
     IKeys = ?config(i_keys, Config),
     OtherKeyPair = enoise_keypair:new(dh25519),
     {ok, _} = bouncer_keys:add_peer(IName, enoise_keypair:pubkey(OtherKeyPair),
-                                    #{authorized_dirs => [?config(r_auth, Config)]}),
+                                    #{authorized_dirs => [?config(r_auth, Config)],
+                                      node_name => IName}),
     ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
@@ -357,7 +358,9 @@ authorize_both(Config) ->
     ok = add_peer(IName, maps:get(public, IKeys), ?config(r_auth, Config)).
 
 add_peer(Name, Public, AuthDir) ->
-    {ok, _Path} = bouncer_keys:add_peer(Name, Public, #{authorized_dirs => [AuthDir]}),
+    {ok, _Path} = bouncer_keys:add_peer(Name, Public,
+                                        #{authorized_dirs => [AuthDir],
+                                          node_name => Name}),
     ok.
 
 initiator_opts(Name, AuthDir, Suite) ->
