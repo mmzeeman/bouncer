@@ -74,22 +74,17 @@ do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
             stop_connection(MyNode, {accept_handover_failed, Reason})
     end.
 
-accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, Settings) ->
+accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, #{ keys := Keys, node_name := OwnName, hs_opts := HsOptions } = Settings) ->
     Timer = dist_util:start_timer(SetupTime),
-    Keys = maps:get(keys, Settings),
-    OwnName = maps:get(node_name, Settings),
-    case bouncer_hs:respond(Socket, OwnName, Keys, maps:get(hs_opts, Settings)) of
+    case bouncer_hs:respond(Socket, OwnName, Keys, HsOptions) of
         {ok, Result} ->
-            start_dist_handshake(Kernel, Socket, MyNode, undefined, Allowed,
-                                 Timer, Settings, Result, responder);
+            start_dist_handshake(Kernel, Socket, MyNode, undefined, Allowed, Timer, Settings, Result, responder);
         {error, Reason} ->
             stop_connection(MyNode, {noise_handshake, Reason})
     end.
 
 setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    spawn_opt(?MODULE, do_setup,
-              [self(), Node, Type, MyNode, LongOrShortNames, SetupTime],
-              dist_util:net_ticker_spawn_options()).
+    spawn_opt(?MODULE, do_setup, [self(), Node, Type, MyNode, LongOrShortNames, SetupTime], dist_util:net_ticker_spawn_options()).
 
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     case settings() of
@@ -115,10 +110,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
                                              maps:get(keys, Settings),
                                              InitiateOpts) of
                         {ok, Result} ->
-                            start_dist_handshake(Kernel, Socket, MyNode, Node,
-                                                 undefined, Timer, Settings,
-                                                 Result, {initiator, NetAddress,
-                                                          Type, Version});
+                            start_dist_handshake(Kernel, Socket, MyNode, Node, undefined, Timer, Settings, Result, {initiator, NetAddress, Type, Version});
                         {error, Reason} ->
                             stop_connection(Node, {noise_handshake, Reason})
                     end;
@@ -132,8 +124,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
             stop_connection(Node, {address_lookup, Reason})
     end.
 
-start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer,
-                     Settings, Result, Role) ->
+start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings, Result, Role) ->
     case initialize_controller(Socket, Result, Settings, Role) of
         {ok, Controller, Reader, Writer} ->
             HSData0 = #hs_data{
@@ -440,14 +431,17 @@ recv_fun(Controller, Reader, Result, Role) ->
             Monitor = erlang:monitor(process, Reader),
             Reader ! {read, self(), Ref, Timeout},
             receive
+                {Ref, {ok, <<$N, _Flags:64, _Creation:32, Len:16, Name:Len/binary, _/binary>> = Packet}}
+                  when Role =:= responder ->
+                    erlang:demonitor(Monitor, [flush]),
+                    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
+                {Ref, {ok, <<$n, _Version:16, _Flags:32, Name/binary>> = Packet}}
+                  when Role =:= responder ->
+                    erlang:demonitor(Monitor, [flush]),
+                    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
                 {Ref, {ok, Packet}} ->
                     erlang:demonitor(Monitor, [flush]),
-                    case check_authenticated_name(Role, Packet, Result) of
-                        ok -> {ok, binary_to_list(Packet)};
-                        {error, Reason} ->
-                            log_io_error(maps:get(remote_name, Result), Reason),
-                            {error, Reason}
-                    end;
+                    {ok, binary_to_list(Packet)};
                 {Ref, {error, closed}} ->
                     erlang:demonitor(Monitor, [flush]),
                     maybe_log_unauthorized(Role, Result),
@@ -460,21 +454,10 @@ recv_fun(Controller, Reader, Result, Role) ->
             end
     end.
 
-authenticated_name(responder, Packet, Expected) ->
-    %% This wrapped f_recv is the earliest point where dist_util sees the
-    %% remote name; check its bytes before recv_name/1 can create an atom.
-    case dist_packet_name(Packet) of
-        {ok, Expected} -> ok;
-        {ok, Actual} -> {error, {authenticated_name_mismatch, Expected, Actual}};
-        error -> {error, malformed_distribution_name}
-    end.
-dist_packet_name(<<$N, _Flags:64, _Creation:32, Len:16,
-                   Name:Len/binary, _/binary>>) ->
-   {ok, Name};
-dist_packet_name(<<$n, _Version:16, _Flags:32, Name/binary>>) ->
-   {ok, Name};
-dist_packet_name(_) ->
-    error.
+do_expected_name_check(Expected, Expected, Packet) ->
+    {ok, binary_to_list(Packet)};
+do_expected_name_check(Expected, Actual, _Packet) ->
+    {error, {authenticated_name_mismatch, Expected, Actual}}.
 
 maybe_log_unauthorized({initiator, _NetAddress, _Type, _Version}, Result) ->
     Fingerprint = bouncer_keys:fingerprint(maps:get(public, maps:get(keys,
@@ -484,21 +467,6 @@ maybe_log_unauthorized({initiator, _NetAddress, _Type, _Version}, Result) ->
 maybe_log_unauthorized(_, _) ->
     ok.
 
-check_authenticated_name(responder, Packet, Result) ->
-    case get({?MODULE, authenticated_name_checked}) of
-        true -> ok;
-        _ ->
-            case authenticated_name(responder, Packet,
-                                    maps:get(remote_name, Result)) of
-                ok ->
-                    put({?MODULE, authenticated_name_checked}, true),
-                    ok;
-                {error, _} = Error ->
-                    Error
-            end
-    end;
-check_authenticated_name(_, _Packet, _Result) ->
-    ok.
 
 settings_value() ->
     {ok, Settings} = settings(),
