@@ -102,10 +102,35 @@ craft(CS, Flags, Rest) ->
     {ok, CS1, Cipher} = enoise_cipher_state:encrypt_with_ad(CS, <<Len:16>>, Plain),
     {<<Len:16, Cipher/binary>>, CS1}.
 
-%% Noise Rekey() with the 32 byte truncation that enoise forgets for AESGCM.
+%% Noise Rekey(): new key, same nonce counter.
 raw_rekey(CS) ->
-    Key = enoise_crypto:rekey(enoise_cipher_state:cipher(CS), enoise_cipher_state:key(CS)),
-    enoise_cipher_state:set_key(CS, binary:part(Key, 0, 32)).
+    enoise_cipher_state:rekey(CS).
+
+%% Independent AEAD implementation on plain OTP crypto, to check enoise against.
+-define(MAX_NONCE, 16#FFFFFFFFFFFFFFFF).
+
+otp_cipher(?AESGCM) -> aes_256_gcm;
+otp_cipher(?CHACHA) -> chacha20_poly1305.
+
+otp_nonce(?AESGCM, N) -> <<0:32, N:64/big>>;
+otp_nonce(?CHACHA, N) -> <<0:32, N:64/little>>.
+
+otp_encrypt(Name, Key, N, AD, Plain) ->
+    {C, T} = crypto:crypto_one_time_aead(otp_cipher(Name), Key, otp_nonce(Name, N),
+                                         Plain, AD, 16, true),
+    {C, T}.
+
+otp_decrypt(Name, Key, N, AD, <<Len:16, Rest/binary>> = Frame) when byte_size(Rest) =:= Len ->
+    _ = Frame,
+    CLen = Len - 16,
+    <<C:CLen/binary, T:16/binary>> = Rest,
+    crypto:crypto_one_time_aead(otp_cipher(Name), Key, otp_nonce(Name, N), C, AD, T, false).
+
+%% Noise Rekey(): first 32 bytes of ENCRYPT(k, 2^64-1, "", zeros(32)).
+otp_rekey(Name, Key) ->
+    {C, _Tag} = otp_encrypt(Name, Key, ?MAX_NONCE, <<>>, <<0:256>>),
+    32 = byte_size(C),
+    C.
 
 %% Flags of every frame of a stream, following rekeys.
 stream_flags(CS, <<>>) ->
@@ -138,12 +163,19 @@ deflate_raw(Data) ->
 enoise_rekey_matches_noise_spec_test_() ->
     [{Name, fun() ->
         {Tx, _} = handshake(Name),
-        Ours = enoise_cipher_state:key(raw_rekey(Tx)),
-        ?assertEqual(32, byte_size(Ours)),
-        ?assertNotEqual(enoise_cipher_state:key(Tx), Ours),
-        Theirs = enoise_cipher_state:key(enoise_cipher_state:rekey(Tx)),
-        %% enoise returns 32 bytes for ChaChaPoly but 48 for AESGCM (bug).
-        ?assertEqual(Ours, binary:part(Theirs, 0, 32))
+        Key = enoise_cipher_state:key(Tx),
+        Expected = otp_rekey(Name, Key),
+        Rekeyed = enoise_cipher_state:rekey(Tx),
+        ?assertEqual(32, byte_size(enoise_cipher_state:key(Rekeyed))),
+        ?assertEqual(Expected, enoise_cipher_state:key(Rekeyed)),
+        %% the nonce counter continues: after 3 frames the next one uses nonce 3
+        {_, Tx3} = lists:foldl(fun(_, {_, CS}) ->
+                                       {ok, CS1, C} = enoise_cipher_state:encrypt_with_ad(CS, <<>>, <<"x">>),
+                                       {C, CS1}
+                               end, {none, Tx}, lists:seq(1, 3)),
+        {ok, _, Cipher} = enoise_cipher_state:encrypt_with_ad(enoise_cipher_state:rekey(Tx3), <<>>, <<"y">>),
+        {C3, T3} = otp_encrypt(Name, Expected, 3, <<>>, <<"y">>),
+        ?assertEqual(<<C3/binary, T3/binary>>, Cipher)
     end} || Name <- ?SUITES].
 
 zlib_is_not_port_based_test() ->
@@ -567,17 +599,47 @@ rekey_stays_in_sync_over_10_rekeys_test_() ->
         ?assertEqual([{packet, <<"still in sync">>}], element(1, feed(R1, bin(More))))
     end || Name <- ?SUITES].
 
-old_state_cannot_decrypt_after_rekey_test() ->
-    {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{rekey_after => [{frames, 1}]}),
-    {[F1], S1} = send(S, <<"one">>),
-    {[F2], _} = send(S1, <<"two">>),
-    {ok, Old, Flags, _} = raw_decrypt(Tx, F1),
-    ?assertEqual(?LAST bor ?REKEY, Flags),
-    %% Old key, correct nonce: must fail.
-    ?assertEqual({error, decrypt_failed}, raw_decrypt(Old, F2)),
-    %% Rekeyed state works.
-    ?assertMatch({ok, _, ?LAST bor ?REKEY, <<"two">>}, raw_decrypt(raw_rekey(Old), F2)).
+rekey_continues_nonce_and_matches_otp_crypto_test_() ->
+    [{Name, fun() ->
+        {Tx, _} = handshake(Name),
+        K = enoise_cipher_state:key(Tx),
+        K2 = otp_rekey(Name, K),
+        ?assertEqual(32, byte_size(K2)),
+        ?assertNotEqual(K, K2),
+        Total = 5,
+        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 3}]}),
+        {Frames, _} = lists:foldl(fun(I, {Acc, SAcc}) ->
+                                          {[F], S1} = send(SAcc, <<"packet-", (integer_to_binary(I))/binary>>),
+                                          {Acc ++ [F], S1}
+                                  end, {[], S}, lists:seq(1, Total)),
+        lists:foreach(fun({I, <<Len:16, _/binary>> = F}) ->
+            N = I - 1,
+            Key = case I =< 3 of true -> K; false -> K2 end,
+            {Flags, Rest} = case otp_decrypt(Name, Key, N, <<Len:16>>, F) of
+                                <<Fl, R/binary>> -> {Fl, R};
+                                Other -> erlang:error({decrypt_failed, I, Other})
+                            end,
+            ?assertEqual(<<"packet-", (integer_to_binary(I))/binary>>, Rest),
+            ?assertEqual(case I of 3 -> ?LAST bor ?REKEY; _ -> ?LAST end, Flags)
+        end, lists:zip(lists:seq(1, Total), Frames)),
+        %% a nonce reset to 0 (or the old key) must not decrypt the frames after the rekey
+        <<L4:16, _/binary>> = F4 = lists:nth(4, Frames),
+        ?assertEqual(error, otp_decrypt(Name, K2, 0, <<L4:16>>, F4)),
+        ?assertEqual(error, otp_decrypt(Name, K, 3, <<L4:16>>, F4))
+    end} || Name <- ?SUITES].
+
+rekey_frame_uses_old_key_and_next_needs_new_key_test_() ->
+    [{Name, fun() ->
+        {Tx, _} = handshake(Name),
+        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 1}]}),
+        {[F1], S1} = send(S, <<"one">>),
+        {[F2], _} = send(S1, <<"two">>),
+        {ok, Old, Flags, _} = raw_decrypt(Tx, F1),
+        ?assertEqual(?LAST bor ?REKEY, Flags),
+        %% Old key, correct nonce: must fail.
+        ?assertEqual({error, decrypt_failed}, raw_decrypt(Old, F2)),
+        ?assertMatch({ok, _, ?LAST bor ?REKEY, <<"two">>}, raw_decrypt(raw_rekey(Old), F2))
+    end} || Name <- ?SUITES].
 
 rekey_flag_stripped_by_proxy_test_() ->
     [fun() ->
