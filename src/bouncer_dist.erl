@@ -1,8 +1,17 @@
 %% Noise-authenticated Erlang distribution over TCP.
 -module(bouncer_dist).
 
--export([listen/1, listen/2, accept/1, accept_connection/5,
-         setup/5, close/1, select/1, address/0, is_node_name/1]).
+-export([
+     listen/1,
+     listen/2,
+     accept/1,
+     accept_connection/5,
+     setup/5,
+     close/1,
+     select/1,
+     address/0,
+     is_node_name/1
+]).
 
 -export([do_accept/6, do_setup/6, reader/4, writer/4, controller_init/6,
          tick/1, getstat/1]).
@@ -126,7 +135,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
 start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer,
                      Settings, Result, Role) ->
     case initialize_controller(Socket, Result, Settings, Role) of
-        {ok, Controller} ->
+        {ok, Controller, Reader, Writer} ->
             HSData0 = #hs_data{
                          kernel_pid = Kernel,
                          other_node = OtherNode,
@@ -135,9 +144,8 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer,
                          timer = Timer,
                          this_flags = 0,
                          allowed = Allowed,
-                         f_send = send_fun(Controller, get({?MODULE, writer})),
-                         f_recv = recv_fun(Controller, get({?MODULE, reader}),
-                                           Result, Role),
+                         f_send = send_fun(Controller, Writer),
+                         f_recv = recv_fun(Controller, Reader, Result, Role),
                          f_setopts_pre_nodeup = fun(_Ctrl) -> ok end,
                          f_setopts_post_nodeup = fun(_Ctrl) -> ok end,
                          f_getll = fun(Ctrl) -> {ok, Ctrl} end,
@@ -146,11 +154,8 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer,
                          mf_getstat = fun ?MODULE:getstat/1,
                          mf_setopts = setopts_fun(Socket),
                          mf_getopts = fun(_Ctrl, Opts) -> inet:getopts(Socket, Opts) end,
-                         f_handshake_complete =
-                             fun(Ctrl, _Node, DHandle) ->
-                                     handshake_complete(
-                                       Ctrl, get({?MODULE, reader}),
-                                       get({?MODULE, writer}), DHandle)
+                         f_handshake_complete = fun(Ctrl, _Node, DHandle) ->
+                                     handshake_complete(Ctrl, Reader, Writer, DHandle)
                              end},
             case Role of
                 responder ->
@@ -181,9 +186,7 @@ initialize_controller(Socket, Result, Settings, Role) ->
             {Ref, {ok, Controller, Reader, Writer}} ->
                 case gen_tcp:controlling_process(Socket, Reader) of
                     ok ->
-                        put({?MODULE, reader}, Reader),
-                        put({?MODULE, writer}, Writer),
-                        {ok, Controller};
+                        {ok, Controller, Reader, Writer};
                     {error, Reason} ->
                         exit(Controller, kill),
                         {error, {controlling_process, Reason}}
@@ -198,10 +201,8 @@ initialize_controller(Socket, Result, Settings, Role) ->
 
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
-    Reader = spawn_link(?MODULE, reader,
-                        [Socket, Receiver, Role, OwnName]),
-    Writer = spawn_link(?MODULE, writer,
-                        [Socket, Sender, self(), OwnName]),
+    Reader = spawn_link(?MODULE, reader, [Socket, Receiver, Role, OwnName]),
+    Writer = spawn_link(?MODULE, writer, [Socket, Sender, self(), OwnName]),
     Parent ! {Ref, {ok, self(), Reader, Writer}},
     controller_loop(Socket, Writer, undefined).
 

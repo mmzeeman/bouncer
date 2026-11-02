@@ -404,12 +404,16 @@ directory. Idempotent for the same key.
 -spec add_peer(binary(), binary(), opts()) -> {ok, file:filename()} | {error, term()}.
 add_peer(Name, PublicKey, Opts) ->
     case {valid_node_name(Name), is_binary(PublicKey) andalso byte_size(PublicKey) =:= 32} of
-        {false, _} -> {error, invalid_name};
-        {_, false} -> {error, invalid_key};
+        {false, _} ->
+            {error, invalid_name};
+        {_, false} ->
+            {error, invalid_key};
         {true, true} ->
             case dirs_for(Opts) of
-                [] -> {error, no_authorized_dir};
-                [Dir | _] -> add_peer_in(Dir, Name, PublicKey)
+                [] ->
+                    {error, no_authorized_dir};
+                [Dir | _] ->
+                    add_peer_in(Dir, Name, PublicKey)
             end
     end.
 
