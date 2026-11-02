@@ -187,7 +187,7 @@ identity_test_() ->
                        binary_to_list(binary:encode_hex(Sec)),
                        lists:flatten(io_lib:format("~w", [binary_to_list(Sec)])),
                        lists:flatten(io_lib:format("~p", [Sec]))],
-          [?assertEqual(nomatch, string:find(All, F, leading) -- nomatch, F) || F <- Forbidden]
+          [?assertEqual(nomatch, string:find(All, F, leading), F) || F <- Forbidden]
       end) end}].
 
 watch(Dir, Parent, Loose) ->
