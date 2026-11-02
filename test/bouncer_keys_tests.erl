@@ -187,20 +187,31 @@ identity_test_() ->
                        binary_to_list(binary:encode_hex(Sec)),
                        lists:flatten(io_lib:format("~w", [binary_to_list(Sec)])),
                        lists:flatten(io_lib:format("~p", [Sec]))],
-          [?assertEqual(nomatch, string:find(All, F, leading) -- nomatch, F) || F <- Forbidden]
+          [?assertEqual(nomatch, string:find(All, F, leading), F) || F <- Forbidden]
       end) end}].
 
 watch(Dir, Parent, Loose) ->
     receive
         stop -> Parent ! {watch_done, Loose}
     after 0 ->
-        {ok, Names} = file:list_dir(Dir),
-        Bad = [N || N <- Names,
-                    case file:read_link_info(filename:join(Dir, N)) of
-                        {ok, #file_info{size = S, mode = M}} -> S > 0 andalso (M band 8#077) =/= 0;
-                        _ -> false
-                    end],
-        watch(Dir, Parent, Bad ++ Loose)
+        case file:list_dir(Dir) of
+            {ok, Names} ->
+                Bad = [N || N <- Names,
+                            case file:read_link_info(filename:join(Dir, N)) of
+                                {ok, #file_info{size = S, mode = M}} ->
+                                    S > 0 andalso (M band 8#077) =/= 0;
+                                _ -> false
+                            end],
+                watch(Dir, Parent, Bad ++ Loose);
+            {error, enoent} ->
+                receive
+                    stop -> Parent ! {watch_done, Loose}
+                after 1 ->
+                    watch(Dir, Parent, Loose)
+                end;
+            {error, Reason} ->
+                exit({watch_list_dir, Reason})
+        end
     end.
 
 %%% Node names

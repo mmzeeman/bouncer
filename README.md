@@ -92,6 +92,26 @@ To migrate suites without interrupting connectivity:
 2. Switch each node's outgoing `suite` to the new suite.
 3. Remove the old suite from `accept_suites` after all nodes have switched.
 
+### Handshake API
+
+`bouncer_hs:initiate(Socket, TargetName, Keys, Opts)` and
+`bouncer_hs:respond(Socket, OwnName, Keys, Opts)` perform the three-flight
+handshake on a connected `gen_tcp` socket. `Keys` is the map returned by
+`bouncer_keys:load_or_generate/2`. Initiator options require `own_name`;
+`suite` defaults to `aesgcm_sha512`, while responder `accept_suites` defaults
+to `[aesgcm_sha512]`. `handshake_timeout_ms` defaults to 5000 and
+`max_pending` defaults to 64. Other key-authorization options are passed to
+`bouncer_keys:check_peer/3`.
+
+Success returns `#{send := SendCipherState, recv := RecvCipherState,
+remote_name := RemoteName, remote_key := RemotePublicKey, suite := Suite}`.
+The socket stays open in binary, passive, raw-packet mode, ready for transport
+framing. Pass `send` and `recv` to `bouncer_protocol:new_sender/2` and
+`new_receiver/2`; the handshake does not construct transport state. The
+initiator returns immediately after sending message 3, without waiting for
+responder authorization of its identity. If the responder rejects message 3,
+the initiator sees the closed socket on its next read.
+
 
 ## Transport framing: frame format, flags, policies, defaults
 
