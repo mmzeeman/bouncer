@@ -5,11 +5,15 @@
     hello_header/1,
     hello/2,
     parse_hello_header/2,
+    parse_reply_header/1,
+    parse_msg3_prefix/1,
     reply_ok/1,
     reply_reject/1,
     msg3_frame/1,
     prologue/2,
     name_payload/1,
+    encode_name/1,
+    decode_name/1,
     noise_name/1,
     suite_id/1,
     suite_atom/1,
@@ -95,6 +99,43 @@ parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
 parse_hello_header(_, _) ->
     {error, bad_hello_header}.
 
+-doc """
+Parses the eight-byte responder header. Successful message lengths must be
+within the message-2 bounds in `limits/0`; rejection statuses must have length
+zero.
+""".
+-spec parse_reply_header(binary()) ->
+          {ok, 1..16#ffff} |
+          {error, unsupported_version | unsupported_suite | bad_reply_header}.
+parse_reply_header(<<"BNCR", ?VERSION:8, 0:8, Msg2Len:16>>) ->
+    {Min, Max} = maps:get(msg2_length, limits()),
+    case Msg2Len >= Min andalso Msg2Len =< Max of
+        true -> {ok, Msg2Len};
+        false -> {error, bad_reply_header}
+    end;
+parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+  when Status =:= 1 ->
+    {error, unsupported_version};
+parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+  when Status =:= 2 ->
+    {error, unsupported_suite};
+parse_reply_header(_) ->
+    {error, bad_reply_header}.
+
+-doc """
+Parses the two-byte message-3 length prefix, requiring the length to fit the
+message-3 bounds in `limits/0`.
+""".
+-spec parse_msg3_prefix(binary()) -> {ok, 1..16#ffff} | {error, bad_msg3_length}.
+parse_msg3_prefix(<<Len:16>>) ->
+    {Min, Max} = maps:get(msg3_length, limits()),
+    case Len >= Min andalso Len =< Max of
+        true -> {ok, Len};
+        false -> {error, bad_msg3_length}
+    end;
+parse_msg3_prefix(_) ->
+    {error, bad_msg3_length}.
+
 -spec reply_ok(binary()) -> binary().
 reply_ok(Msg2) when is_binary(Msg2), byte_size(Msg2) =< ?MAX_FRAME_LENGTH ->
     <<?HELLO_MAGIC/binary, ?VERSION:8, 0:8, (byte_size(Msg2)):16, Msg2/binary>>.
@@ -118,6 +159,24 @@ name_payload(Name) when is_binary(Name),
                         byte_size(Name) >= ?MIN_NAME_LENGTH,
                         byte_size(Name) =< ?MAX_NAME_LENGTH ->
     <<(byte_size(Name)):16, Name/binary>>.
+
+-doc "Alias for `name_payload/1`, used when encoding a handshake identity.".
+-spec encode_name(binary()) -> binary().
+encode_name(Name) ->
+    name_payload(Name).
+
+-doc """
+Decodes a length-prefixed node name. Rejects malformed/trailing data and
+returns the name as a binary without creating an atom.
+""".
+-spec decode_name(binary()) -> {ok, binary()} | {error, bad_name | bad_payload}.
+decode_name(<<Len:16, Name:Len/binary>>) ->
+    case bouncer_keys:valid_node_name(Name) of
+        true -> {ok, Name};
+        false -> {error, bad_name}
+    end;
+decode_name(_) ->
+    {error, bad_payload}.
 
 %% Empty-payload XX messages are 32, 96, and 64 bytes; the name payload is
 %% encrypted in messages 2 and 3, adding its two-byte length and name bytes.

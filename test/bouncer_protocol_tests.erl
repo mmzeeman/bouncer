@@ -94,6 +94,50 @@ wire_frames_test() ->
     ?assertEqual(<<0, 2, Msg3/binary>>, bouncer_protocol:msg3_frame(Msg3)),
     ?assertEqual(<<0, 8, "bob@host">>, bouncer_protocol:name_payload(<<"bob@host">>)).
 
+reply_header_test() ->
+    Limits = bouncer_protocol:limits(),
+    {Msg2Min, Msg2Max} = maps:get(msg2_length, Limits),
+    ?assertEqual({ok, Msg2Min},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 0, Msg2Min:16>>)),
+    ?assertEqual({ok, Msg2Max},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 0, Msg2Max:16>>)),
+    ?assertEqual({error, bad_reply_header},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 0, (Msg2Min - 1):16>>)),
+    ?assertEqual({error, bad_reply_header},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 0, (Msg2Max + 1):16>>)),
+    ?assertEqual({error, unsupported_version},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 1, 0:16>>)),
+    ?assertEqual({error, unsupported_suite},
+                 bouncer_protocol:parse_reply_header(<<"BNCR", 1, 2, 0:16>>)),
+    [?assertEqual({error, bad_reply_header},
+                  bouncer_protocol:parse_reply_header(Header))
+     || Header <- [<<"BNCR", 1, 1, 1:16>>, <<"BNCR", 1, 2, 1:16>>,
+                   <<"BNCR", 1, 3, 0:16>>, <<"XNCR", 1, 0, Msg2Min:16>>,
+                   <<"BNCR", 2, 0, Msg2Min:16>>, <<>>]].
+
+msg3_prefix_test() ->
+    Limits = bouncer_protocol:limits(),
+    {Min, Max} = maps:get(msg3_length, Limits),
+    ?assertEqual({ok, Min}, bouncer_protocol:parse_msg3_prefix(<<Min:16>>)),
+    ?assertEqual({ok, Max}, bouncer_protocol:parse_msg3_prefix(<<Max:16>>)),
+    ?assertEqual({error, bad_msg3_length},
+                 bouncer_protocol:parse_msg3_prefix(<<(Min - 1):16>>)),
+    ?assertEqual({error, bad_msg3_length},
+                 bouncer_protocol:parse_msg3_prefix(<<(Max + 1):16>>)),
+    ?assertEqual({error, bad_msg3_length}, bouncer_protocol:parse_msg3_prefix(<<1>>)).
+
+name_payload_test() ->
+    Name = <<"node@host">>,
+    Payload = bouncer_protocol:name_payload(Name),
+    ?assertEqual(Payload, bouncer_protocol:encode_name(Name)),
+    ?assertEqual({ok, Name}, bouncer_protocol:decode_name(Payload)),
+    ?assertEqual({error, bad_payload},
+                 bouncer_protocol:decode_name(<<3:16, "node@host">>)),
+    ?assertEqual({error, bad_payload},
+                 bouncer_protocol:decode_name(<<8:16, "node@host">>)),
+    ?assertEqual({error, bad_name},
+                 bouncer_protocol:decode_name(<<3:16, "bad">>)).
+
 limits_match_enoise_test_() ->
     [?_test(begin
         Limits = bouncer_protocol:limits(),
