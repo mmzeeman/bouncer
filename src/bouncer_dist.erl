@@ -165,10 +165,10 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings
 
 initialize_controller(Socket, Result, Settings, Role) ->
     try
-        Sender = bouncer_protocol:new_sender(maps:get(send, Result),
-                                             maps:get(sender_policy, Settings)),
-        Receiver = bouncer_protocol:new_receiver(maps:get(recv, Result),
-                                                 maps:get(receiver_policy, Settings)),
+        #{send := Send, recv := Recv} = Result,
+        #{sender_policy := SP, receiver_policy := RP} = Settings,
+        Sender = bouncer_protocol:new_sender(Send, SP),
+        Receiver = bouncer_protocol:new_receiver(Recv, RP),
         Ref = make_ref(),
         Controller = spawn_link(?MODULE, controller_init,
                                 [self(), Ref, Socket, Receiver, Sender,
@@ -431,17 +431,9 @@ recv_fun(Controller, Reader, Result, Role) ->
             Monitor = erlang:monitor(process, Reader),
             Reader ! {read, self(), Ref, Timeout},
             receive
-                {Ref, {ok, <<$N, _Flags:64, _Creation:32, Len:16, Name:Len/binary, _/binary>> = Packet}}
-                  when Role =:= responder ->
-                    erlang:demonitor(Monitor, [flush]),
-                    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
-                {Ref, {ok, <<$n, _Version:16, _Flags:32, Name/binary>> = Packet}}
-                  when Role =:= responder ->
-                    erlang:demonitor(Monitor, [flush]),
-                    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
                 {Ref, {ok, Packet}} ->
                     erlang:demonitor(Monitor, [flush]),
-                    {ok, binary_to_list(Packet)};
+                    do_packet(Role, Packet, Result);
                 {Ref, {error, closed}} ->
                     erlang:demonitor(Monitor, [flush]),
                     maybe_log_unauthorized(Role, Result),
@@ -453,6 +445,14 @@ recv_fun(Controller, Reader, Result, Role) ->
                     {error, {reader_exit, Reason}}
             end
     end.
+
+%% Verify the expected name with the name from the handshake from dist_utils
+do_packet(responder, <<$N, _Flags:64, _Creation:32, Len:16, Name:Len/binary, _/binary>> = Packet, Result) ->
+    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
+do_packet(responder, <<$n, _Version:16, _Flags:32, Name/binary>> = Packet, Result) ->
+    do_expected_name_check(maps:get(remote_name, Result), Name, Packet);
+do_packet(_Role, Packet, _Result) ->
+    {ok, binary_to_list(Packet)}.
 
 do_expected_name_check(Expected, Expected, Packet) ->
     {ok, binary_to_list(Packet)};
@@ -490,8 +490,10 @@ setopts_fun(Socket) ->
             case [Opt || {Key, _} = Opt <- Opts,
                          Key =:= active orelse Key =:= packet orelse Key =:= deliver
                                   orelse Key =:= mode] of
-                [] -> inet:setopts(Socket, Opts);
-                Bad -> {error, {badopts, Bad}}
+                [] ->
+                    inet:setopts(Socket, Opts);
+                Bad ->
+                    {error, {badopts, Bad}}
             end
     end.
 
@@ -527,7 +529,8 @@ stop_connection(Node, Reason) ->
     Fingerprint = case settings() of
                       {ok, Settings} ->
                           maps:get(fingerprint, maps:get(keys, Settings));
-                      _ -> "unavailable"
+                      _ ->
+                          "unavailable"
                   end,
     logger:warning("bouncer_dist: connection failed node=~p fingerprint=~ts reason=~p",
                    [Node, Fingerprint, Reason]),
@@ -550,14 +553,18 @@ identity_fingerprint() ->
     end.
 
 socket_options(Settings) ->
-    [binary, {packet, 0}, {active, false}, {nodelay, true},
+    [binary, {packet, 0},
+     {active, false},
+     {nodelay, true},
      {send_timeout, maps:get(send_timeout_ms, Settings)},
      {send_timeout_close, true}].
 
 settings() ->
     case persistent_term:get(?SETTINGS, undefined) of
-        undefined -> {error, settings_not_initialized};
-        Settings -> {ok, Settings}
+        undefined ->
+            {error, settings_not_initialized};
+        Settings ->
+            {ok, Settings}
     end.
 
 node_name(Name, Host) ->
@@ -623,7 +630,8 @@ validate_settings(Flags, Env, Keys, NodeName) ->
     Layers = [Opts, policy_layer(Flags), policy_layer(Env)],
     case {bouncer_protocol:sender_policy(Layers),
           bouncer_protocol:receiver_policy(Layers),
-          carrier_values(Flags, Env, NodeName, Keys)} of
+          carrier_values(Flags, Env, NodeName, Keys)}
+    of
         {{ok, SenderPolicy}, {ok, ReceiverPolicy}, {ok, Carrier}} ->
             {ok, Carrier#{sender_policy => SenderPolicy,
                           receiver_policy => ReceiverPolicy}};
@@ -753,8 +761,10 @@ policy_layer(Settings) ->
                             error -> Acc
                         end
                 end, #{},
-                [{"chunk_size", chunk_size}, {"padding", padding},
-                 {"compression", compression}, {"rekey_after", rekey_after},
+                [{"chunk_size", chunk_size},
+                 {"padding", padding},
+                 {"compression", compression},
+                 {"rekey_after", rekey_after},
                  {"max_packet", max_packet},
                  {"accept_compression", accept_compression},
                  {"max_bytes_without_rekey", max_bytes_without_rekey}]).
