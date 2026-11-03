@@ -13,8 +13,16 @@
      is_node_name/1
 ]).
 
--export([do_accept/6, do_setup/6, reader/4, writer/4, controller_init/6,
-         tick/1, getstat/1]).
+-export([
+    do_accept/6,
+    do_setup/6,
+    reader/4,
+    start_writer/4,
+    writer/4,
+    controller_init/6,
+    tick/1,
+    getstat/1
+]).
 
 -include_lib("kernel/include/net_address.hrl").
 -include_lib("kernel/include/dist_util.hrl").
@@ -193,7 +201,7 @@ initialize_controller(Socket, Result, Settings, Role) ->
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
     Reader = spawn_link(?MODULE, reader, [Socket, Receiver, Role, OwnName]),
-    Writer = spawn_link(?MODULE, writer, [Socket, Sender, self(), OwnName]),
+    Writer = spawn_link(?MODULE, start_writer, [Socket, Sender, self(), OwnName]),
     Parent ! {Ref, {ok, self(), Reader, Writer}},
     controller_loop(Socket, Writer, undefined).
 
@@ -330,13 +338,16 @@ deliver_events([tick | Rest], DHandle) ->
     erlang:dist_ctrl_put_data(DHandle, <<>>),
     deliver_events(Rest, DHandle).
 
+start_writer(Socket, Sender, Controller, OwnName) ->
+    ?MODULE:writer(Socket, bouncer_protocol:tx_start(Sender), Controller, OwnName).
+
 writer(Socket, Sender, Controller, OwnName) ->
     receive
         {send_packet, From, Ref, Packet} ->
             case write_packet(Socket, Sender, Packet) of
                 {ok, Sender1} ->
                     From ! {Ref, ok},
-                    writer(Socket, Sender1, Controller, OwnName);
+                    ?MODULE:writer(Socket, Sender1, Controller, OwnName);
                 {error, Reason} ->
                     From ! {Ref, {error, Reason}},
                     log_io_error(OwnName, {send, Reason}),
@@ -376,7 +387,8 @@ writer_data(Socket, Sender, Controller, OwnName) ->
 
 write_packet(Socket, Sender, Packet) ->
     try bouncer_protocol:tx_packet(Packet) of
-        Pending -> write_packet_frames(Socket, Sender, Pending)
+        Pending ->
+            write_packet_frames(Socket, Sender, Pending)
     catch
         error:Reason -> {error, Reason}
     end.
@@ -385,13 +397,17 @@ write_packet_frames(Socket, Sender, Pending) ->
     case bouncer_protocol:tx_next(Sender, Pending) of
         {Frame, Sender1, more, Pending1} ->
             case gen_tcp:send(Socket, Frame) of
-                ok -> write_packet_frames(Socket, Sender1, Pending1);
-                {error, Reason} -> {error, Reason}
+                ok ->
+                    write_packet_frames(Socket, Sender1, Pending1);
+                {error, Reason} ->
+                    {error, Reason}
             end;
         {Frame, Sender1, done} ->
             case gen_tcp:send(Socket, Frame) of
-                ok -> {ok, Sender1};
-                {error, Reason} -> {error, Reason}
+                ok ->
+                    {ok, Sender1};
+                {error, Reason} ->
+                    {error, Reason}
             end
     end.
 

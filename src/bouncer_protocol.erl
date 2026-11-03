@@ -27,8 +27,11 @@
     receiver_policy/1,
     new_sender/2,
     new_receiver/2,
+
+    tx_start/1,
     tx_packet/1,
     tx_next/2,
+
     tx_tick/1,
     rx_feed/2
 ]).
@@ -292,7 +295,8 @@ limits() ->
              clock :: fun(() -> integer()),
              frames = 0 :: non_neg_integer(),
              bytes = 0 :: non_neg_integer(),
-             t0 :: integer()}).
+             t0 :: integer(),
+             zstream :: zlib:zstream() | undefined}).
 -record(pending, {rest :: binary()}).
 -record(rx, {cs :: enoise_cipher_state:state(),
              buf = <<>> :: binary(),
@@ -508,10 +512,19 @@ cipher state without a key.
 -spec new_sender(enoise_cipher_state:state(), map()) -> sender().
 new_sender(CS, Policy) when is_map(Policy) ->
     ok = check_keyed(CS),
-    #{chunk_size := Chunk, padding := Padding, compression := Compression,
-      rekey_after := RekeyAfter, clock := Clock} = ok_policy(sender_policy(Policy)),
-    #tx{cs = CS, chunk = effective_chunk(Chunk, Padding), padding = Padding,
-        compression = Compression, rekey_after = RekeyAfter, clock = Clock,
+    #{chunk_size := Chunk,
+      padding := Padding,
+      compression := Compression,
+      rekey_after := RekeyAfter,
+      clock := Clock} = ok_policy(sender_policy(Policy)),
+
+    #tx{cs = CS,
+        chunk = effective_chunk(Chunk, Padding),
+        padding = Padding,
+        compression = Compression,
+        zstream = undefined, % must be initialized via tx_start
+        rekey_after = RekeyAfter,
+        clock = Clock,
         t0 = Clock()}.
 
 -doc """
@@ -538,6 +551,21 @@ check_keyed(CS) ->
 effective_chunk(Chunk, none) -> Chunk;
 effective_chunk(Chunk, {fixed, N}) -> min(Chunk, N - 3);
 effective_chunk(Chunk, {bucket, N}) -> min(Chunk, (?MAX_PLAINTEXT div N) * N - 3).
+
+-doc """
+Initialization steps which must be done in the controlling process of the socket.
+It must be called at the start of the writing process. This initializes the
+zstream in the controlling process.
+""".
+tx_start(#tx{ compression = Compression }=Tx) ->
+    Tx#tx{ zstream = init_zstream(Compression) }.
+
+init_zstream({zlib, _}) ->
+    Z = zlib:open(),
+    ok = zlib:deflateInit(Z, default, deflated, -15, 8, default),
+    Z;
+init_zstream(_) ->
+    undefined.
 
 -doc """
 Starts sending one dist packet. Packets are never empty (an empty dist packet
@@ -578,11 +606,12 @@ tx_tick(S) ->
     emit(S, ?F_TICK, <<>>).
 
 tx_data(S, Chunk, Flags) ->
-    {Flags1, Payload} = maybe_compress(S#tx.compression, Chunk, Flags),
+    {Flags1, Payload} = maybe_compress(S, Chunk, Flags),
     emit(S, Flags1, Payload).
 
-maybe_compress({zlib, MinSize}, Chunk, Flags) when byte_size(Chunk) >= MinSize ->
-    Compressed = deflate_raw(Chunk),
+maybe_compress(#tx{compression = {zlib, MinSize}, zstream = Z}, Chunk, Flags)
+  when byte_size(Chunk) >= MinSize ->
+    Compressed = deflate_raw(Z, Chunk),
     case byte_size(Compressed) < byte_size(Chunk) of
         true -> {Flags bor ?F_COMP, Compressed};
         false -> {Flags, Chunk}
@@ -590,14 +619,9 @@ maybe_compress({zlib, MinSize}, Chunk, Flags) when byte_size(Chunk) >= MinSize -
 maybe_compress(_, Chunk, Flags) ->
     {Flags, Chunk}.
 
-deflate_raw(Data) ->
-    Z = zlib:open(),
-    try
-        ok = zlib:deflateInit(Z, default, deflated, -15, 8, default),
-        iolist_to_binary(zlib:deflate(Z, Data, finish))
-    after
-        zlib:close(Z)
-    end.
+deflate_raw(Z, Data) ->
+    ok = zlib:deflateReset(Z),
+    iolist_to_binary(zlib:deflate(Z, Data, finish)).
 
 emit(#tx{padding = Padding} = S, Flags0, Payload) ->
     {Flags1, Body} = pad(Padding, Flags0, Payload),

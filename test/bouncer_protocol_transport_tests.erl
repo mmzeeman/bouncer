@@ -45,7 +45,7 @@ hs_run(I, R) ->
 
 pair(Name, SPolicy, RPolicy) ->
     {Tx, Rx} = handshake(Name),
-    {?P:new_sender(Tx, SPolicy), ?P:new_receiver(Rx, RPolicy)}.
+    {?P:tx_start(?P:new_sender(Tx, SPolicy)), ?P:new_receiver(Rx, RPolicy)}.
 
 bin(IoData) -> iolist_to_binary(IoData).
 
@@ -220,7 +220,7 @@ roundtrip_chunk_size_extremes_test_() ->
 chunk_size_and_last_flag_test_() ->
     [fun() ->
         {Tx, _} = handshake(Name),
-        S = ?P:new_sender(Tx, #{chunk_size => 1000}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{chunk_size => 1000})),
         {Frames, _} = send(S, data(random, 4500)),
         ?assertEqual(5, length(Frames)),
         Flags = stream_flags(Tx, bin(Frames)),
@@ -230,13 +230,13 @@ chunk_size_and_last_flag_test_() ->
 
 default_chunk_size_is_16384_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{})),
     {Frames, _} = send(S, data(random, 16385)),
     ?assertEqual([16384 + 17, 1 + 17], frame_lens(bin(Frames))).
 
 single_chunk_packet_has_last_test() ->
     {Tx, _} = handshake(?AESGCM),
-    {Frames, _} = send(?P:new_sender(Tx, #{}), <<"x">>),
+    {Frames, _} = send(?P:tx_start(?P:new_sender(Tx, #{})), <<"x">>),
     ?assertEqual([?LAST], stream_flags(Tx, bin(Frames))).
 
 %%% ------------------------------------------------------------------
@@ -452,7 +452,7 @@ max_unpadded_payload_test() ->
 compression_sets_flag_and_shrinks_test_() ->
     [fun() ->
         {Tx, Rx} = handshake(Name),
-        S = ?P:new_sender(Tx, #{compression => {zlib, 256}}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{compression => {zlib, 256}})),
         R = ?P:new_receiver(Rx, #{accept_compression => true}),
         Packet = data(compressible, 16384),
         {Frames, _} = send(S, Packet),
@@ -464,7 +464,7 @@ compression_sets_flag_and_shrinks_test_() ->
 
 incompressible_is_sent_plain_test() ->
     {Tx, Rx} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{compression => {zlib, 1}}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{compression => {zlib, 1}})),
     Packet = data(random, 16384),
     {[Frame], _} = send(S, Packet),
     ?assertEqual([?LAST], stream_flags(Tx, Frame)),
@@ -474,7 +474,7 @@ incompressible_is_sent_plain_test() ->
 
 min_size_is_respected_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000})),
     {F255, S1} = send(S, data(compressible, 255)),
     {F256, S2} = send(S1, data(compressible, 256)),
     {F2100, _} = send(S2, data(compressible, 2100)),
@@ -485,13 +485,13 @@ min_size_is_respected_test() ->
 
 short_last_chunk_below_min_is_plain_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000})),
     {Frames, _} = send(S, data(compressible, 2100)),
     ?assertEqual([?COMP, ?COMP, ?LAST], stream_flags(Tx, bin(Frames))).
 
 compression_not_accepted_test() ->
     {Tx, Rx} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{compression => {zlib, 1}}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{compression => {zlib, 1}})),
     {[Frame], _} = send(S, data(compressible, 4000)),
     ?assertMatch({error, compression_not_accepted, _},
                  ?P:rx_feed(?P:new_receiver(Rx, #{}), Frame)),
@@ -579,7 +579,7 @@ sample_loop(Peak, Parent, Ref) ->
 rekey_stays_in_sync_over_10_rekeys_test_() ->
     [fun() ->
         {Tx, Rx} = handshake(Name),
-        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 100}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 100})),
         R = ?P:new_receiver(Rx, #{}),
         Packets = [data(random, 250) || _ <- lists:seq(1, 12)],
         {Wire, S1} = lists:foldl(fun(P, {W, SAcc}) ->
@@ -607,7 +607,7 @@ rekey_continues_nonce_and_matches_otp_crypto_test_() ->
         ?assertEqual(32, byte_size(K2)),
         ?assertNotEqual(K, K2),
         Total = 5,
-        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 3}]}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 3}]})),
         {Frames, _} = lists:foldl(fun(I, {Acc, SAcc}) ->
                                           {[F], S1} = send(SAcc, <<"packet-", (integer_to_binary(I))/binary>>),
                                           {Acc ++ [F], S1}
@@ -631,7 +631,7 @@ rekey_continues_nonce_and_matches_otp_crypto_test_() ->
 rekey_frame_uses_old_key_and_next_needs_new_key_test_() ->
     [{Name, fun() ->
         {Tx, _} = handshake(Name),
-        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 1}]}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 1}]})),
         {[F1], S1} = send(S, <<"one">>),
         {[F2], _} = send(S1, <<"two">>),
         {ok, Old, Flags, _} = raw_decrypt(Tx, F1),
@@ -644,7 +644,7 @@ rekey_frame_uses_old_key_and_next_needs_new_key_test_() ->
 rekey_flag_stripped_by_proxy_test_() ->
     [fun() ->
         {Tx, Rx} = handshake(Name),
-        S = ?P:new_sender(Tx, #{rekey_after => [{frames, 1}]}),
+        S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 1}]})),
         R = ?P:new_receiver(Rx, #{}),
         {[F1], S1} = send(S, <<"one">>),
         {[F2], _} = send(S1, <<"two">>),
@@ -674,7 +674,7 @@ max_bytes_without_rekey_met_by_rekeying_sender_test() ->
 
 rekey_frames_limit_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 10}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 10})),
     {Wire, _} = send(S, data(random, 100)),
     Flags = stream_flags(Tx, bin(Wire)),
     ?assertEqual(10, length(Flags)),
@@ -685,7 +685,7 @@ rekey_frames_limit_test() ->
 rekey_bytes_limit_test() ->
     {Tx, _} = handshake(?AESGCM),
     %% every tick frame is 17 bytes of ciphertext
-    S = ?P:new_sender(Tx, #{rekey_after => [{bytes, 17 * 4}]}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{bytes, 17 * 4}]})),
     {Wire, _} = lists:foldl(fun(_, {W, SAcc}) ->
                                     {T, S1} = tick(SAcc),
                                     {[W, T], S1}
@@ -697,7 +697,7 @@ rekey_ms_limit_with_injected_clock_test() ->
     {Tx, Rx} = handshake(?AESGCM),
     put(test_clock, 0),
     Clock = fun() -> get(test_clock) end,
-    S0 = ?P:new_sender(Tx, #{rekey_after => [{ms, 1000}], clock => Clock}),
+    S0 = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{ms, 1000}], clock => Clock})),
     R0 = ?P:new_receiver(Rx, #{}),
     Times = [0, 500, 999, 1000, 1500, 1999, 2000, 2001],
     {Wire, _} = lists:foldl(fun(T, {W, SAcc}) ->
@@ -713,7 +713,7 @@ rekey_ms_limit_with_injected_clock_test() ->
 
 rekey_any_limit_triggers_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{rekey_after => [{frames, 100}, {bytes, 17 * 2}, {ms, 100000}]}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => [{frames, 100}, {bytes, 17 * 2}, {ms, 100000}]})),
     {A, S1} = tick(S),
     {B, _} = tick(S1),
     ?assertEqual([?TICK, ?TICK bor ?REKEY], stream_flags(Tx, bin([A, B]))).
@@ -724,7 +724,7 @@ default_rekey_after_is_one_gib_test() ->
 
 rekey_never_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = ?P:new_sender(Tx, #{rekey_after => never, chunk_size => 10}),
+    S = ?P:tx_start(?P:new_sender(Tx, #{rekey_after => never, chunk_size => 10})),
     {Wire, _} = send(S, data(random, 1000)),
     ?assertEqual([0], lists:usort([F band ?REKEY || F <- stream_flags(Tx, bin(Wire))])).
 
@@ -1022,7 +1022,7 @@ invalid_sender_settings_test_() ->
         {error, {invalid_setting, K, V, Allowed}} = ?P:sender_policy(#{K => V}),
         ?assert(is_list(Allowed) andalso length(Allowed) > 10),
         ?assertError({badarg, {invalid_setting, K, V, _}},
-                     ?P:new_sender(element(1, handshake(?AESGCM)), #{K => V}))
+                     ?P:tx_start(?P:new_sender(element(1, handshake(?AESGCM)), #{K => V})))
     end} || {K, V} <- Bad].
 
 invalid_receiver_settings_test_() ->
@@ -1043,11 +1043,11 @@ allowed_values_are_named_in_the_error_test() ->
 validated_policy_is_accepted_again_test() ->
     {ok, P} = ?P:sender_policy(#{padding => "fixed:512", compression => "zlib:1"}),
     {Tx, _} = handshake(?AESGCM),
-    ?assertMatch(_, ?P:new_sender(Tx, P)).
+    ?assertMatch(_, ?P:tx_start(?P:new_sender(Tx, P))).
 
 unkeyed_cipher_state_is_refused_test() ->
     CS = enoise_cipher_state:init(empty, 'AESGCM'),
-    ?assertError(badarg, ?P:new_sender(CS, #{})),
+    ?assertError(badarg, ?P:tx_start(?P:new_sender(CS, #{}))),
     ?assertError(badarg, ?P:new_receiver(CS, #{})).
 
 %%% ------------------------------------------------------------------
