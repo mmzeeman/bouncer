@@ -47,6 +47,39 @@ Transport policy options include `chunk_size`, `padding`, `compression`,
 emulator distribution buffer limit; the carrier relies on it and TCP send
 timeouts for backpressure.
 
+## Distribution benchmark
+
+`tools/bouncer_bench` compares `inet_tcp` with `bouncer` using peer nodes on
+localhost. It measures sequential RPC round-trip latency for small payloads
+and one-way payload throughput for larger RPC requests. It also runs a
+concurrent mailbox workload: multiple Erlang sender processes send ordinary
+tuples with binary payloads to one remote process, which replies to each
+message. Set `--mailbox-workers`, `--mailbox-messages`, and
+`--mailbox-sizes` to adjust its concurrency and message mix. In that workload,
+`latency_ms` is the mean request/acknowledgement round trip per message while
+the senders run concurrently; throughput counts request payload bytes.
+
+The same workload definitions and payload bytes are reused for the
+`inet_tcp` reference and every bouncer configuration. The `random` payload
+option selects deterministic, repeatable high-entropy bytes rather than
+generating new random data for each run. Each bouncer result includes the
+matching `inet_tcp` reference and percentage changes. The
+`inet_tcp` reference is measured once per workload and reused across bouncer
+configurations. The default matrix covers all four Noise suites, no
+compression and two zlib thresholds, and three chunk sizes. Payloads are
+compressible by default; use `--payload random` to measure incompressible data
+instead.
+
+Run it after checking out the project (the script builds the project and
+benchmark worker first):
+
+    tools/bouncer_bench --output benchmark.csv
+
+Use `--help` to see matrix and workload options. The worker reports one CSV row
+per workload/configuration. It starts temporary peers and key directories,
+then removes those directories on exit. Benchmark results are machine- and
+load-dependent; compare runs on an otherwise idle host.
+
 ## Noise handshake protocol
 
 The handshake uses the Noise `XX` pattern. The `bouncer_protocol` module
