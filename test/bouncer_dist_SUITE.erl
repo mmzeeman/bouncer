@@ -126,7 +126,7 @@ unauthorized_and_name_binding(Config) ->
         start_node(Root, "untrusted", []),
     ok = install_log_capture(PeerC),
     {ok, TempAuthorization} =
-        bouncer_keys:add_peer(NameC, maps:get(public, KeyC),
+        bouncer_keys:add_peer(NameC, bouncer_keys:public(KeyC),
                               #{authorized_dirs => ?config(auth_a, Config),
                                 node_name => ?config(name_a, Config)}),
     ?assertEqual(pang, peer:call(PeerA, net_adm, ping, [NodeC])),
@@ -134,7 +134,7 @@ unauthorized_and_name_binding(Config) ->
     ?assert(log_contains(PeerA, "probably not authorized there")),
     ok = file:delete(TempAuthorization),
     {ok, _} = bouncer_keys:add_peer(?config(name_a, Config),
-                                    maps:get(public, ?config(key_a, Config)),
+                                    bouncer_keys:public(?config(key_a, Config)),
                                     #{authorized_dirs => AuthC,
                                       node_name => NameC}),
     ?assertEqual(pang, peer:call(PeerC, net_adm, ping, [NodeA])),
@@ -146,7 +146,7 @@ unauthorized_and_name_binding(Config) ->
     AuthB = ?config(auth_b, Config),
     KeyA = ?config(key_a, Config),
     ok = file:delete(?config(auth_file_a, Config)),
-    {ok, _} = bouncer_keys:add_peer(WrongName, maps:get(public, KeyA),
+    {ok, _} = bouncer_keys:add_peer(WrongName, bouncer_keys:public(KeyA),
                                     #{authorized_dirs => AuthB,
                                       node_name => ?config(name_b, Config)}),
     ?assertEqual(pang, peer:call(PeerA, net_adm, ping,
@@ -221,7 +221,7 @@ idle_disconnect_reconnect_and_revocation(Config) ->
     ?assertEqual(ok, await_result(PeerB, {nodedown, RevocationRef}, 10000)),
     ?assertEqual(pang, peer:call(PeerB, net_adm, ping, [NodeA])),
     {ok, _} = bouncer_keys:add_peer(?config(name_b, Config),
-                                    maps:get(public, ?config(key_b, Config)),
+                                    bouncer_keys:public(?config(key_b, Config)),
                                     #{authorized_dirs => ?config(auth_a, Config),
                                       node_name => ?config(name_a, Config)}),
     ?assertEqual(pong, peer:call(PeerB, net_adm, ping, [NodeA])),
@@ -265,7 +265,7 @@ logs_do_not_contain_secret_key(Config) ->
               Events = peer:call(Peer, persistent_term, get,
                                  [{?MODULE, captured_logs}, []]),
               Encoded = term_to_binary(Events),
-              Secret = maps:get(secret, Key),
+              Secret = bouncer_keys:secret(Key),
               ?assertEqual(nomatch, binary:match(Encoded, Secret)),
               ?assertEqual(nomatch,
                            binary:match(Encoded, base64:encode(Secret)))
@@ -428,7 +428,7 @@ start_plain_node(Root) ->
     {Peer, Node}.
 
 authorize(Name, Keys, AuthDir) ->
-    {ok, Path} = bouncer_keys:add_peer(Name, maps:get(public, Keys),
+    {ok, Path} = bouncer_keys:add_peer(Name, bouncer_keys:public(Keys),
                                        #{authorized_dirs => AuthDir,
                                          node_name => Name}),
     Path.
