@@ -24,15 +24,16 @@
 %% Transport framing (see the TRANSPORT FRAMING section at the bottom).
 -export([
     sender_policy/1,
-    receiver_policy/1,
     new_sender/2,
-    new_receiver/2,
 
     tx_start/1,
     tx_packet/1,
     tx_next/2,
-
     tx_tick/1,
+
+    receiver_policy/1,
+    new_receiver/2,
+    rx_start/1,
     rx_feed/2
 ]).
 
@@ -678,9 +679,15 @@ rekey_due(#tx{rekey_after = Limits, frames = Frames, bytes = Bytes, t0 = T0}, Le
                  ({ms, T}) -> Now - T0 >= T
               end, Limits).
 
-%%% ------------------------------------------------------------------
-%%% Receiver
-%%% ------------------------------------------------------------------
+%%
+%% Receiver
+%%
+
+-doc """
+Initialize the reader from the controlling process.
+""".
+rx_start(Rx) ->
+    Rx.
 
 -doc """
 Feeds received bytes (any split of the byte stream) to the receiver.
