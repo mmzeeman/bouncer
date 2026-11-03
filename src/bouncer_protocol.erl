@@ -288,26 +288,35 @@ limits() ->
                   | packet_too_large | rekey_required | rekey_unsupported.
 -type rx_event() :: {packet, iodata()} | tick.
 
--record(tx, {cs :: enoise_cipher_state:state(),
-             chunk :: pos_integer(),
-             padding :: padding(),
-             compression :: compression(),
-             rekey_after :: rekey_after(),
-             clock :: fun(() -> integer()),
-             frames = 0 :: non_neg_integer(),
-             bytes = 0 :: non_neg_integer(),
-             t0 :: integer(),
-             zstream :: zlib:zstream() | undefined}).
--record(pending, {rest :: binary()}).
--record(rx, {cs :: enoise_cipher_state:state(),
-             buf = <<>> :: binary(),
-             acc = [] :: [binary()],
-             acc_size = 0 :: non_neg_integer(),
-             max_packet :: pos_integer(),
-             accept_compression :: boolean(),
-             max_bytes :: pos_integer() | infinity,
-             since = 0 :: non_neg_integer(),
-             dead = false :: false | {true, rx_error()}}).
+-record(tx, {
+    cs          :: enoise_cipher_state:state(),
+    chunk       :: pos_integer(),
+    padding     :: padding(),
+    compression :: compression(),
+    zstream     :: undefined | zlib:zstream(),
+    rekey_after :: rekey_after(),
+    clock       :: fun(() -> integer()),
+    frames = 0  :: non_neg_integer(),
+    bytes = 0   :: non_neg_integer(),
+    t0          :: integer()
+}).
+
+-record(pending, {
+    rest :: binary()
+}).
+
+-record(rx, {
+    cs                 :: enoise_cipher_state:state(),
+    buf = <<>>         :: binary(),
+    acc = []           :: [binary()],
+    acc_size = 0       :: non_neg_integer(),
+    max_packet         :: pos_integer(),
+    accept_compression :: boolean(),
+    zstream            :: undefined | zlib:zstream(),
+    max_bytes          :: pos_integer() | infinity,
+    since = 0          :: non_neg_integer(),
+    dead = false       :: false | {true, rx_error()}
+}).
 
 -opaque sender() :: #tx{}.
 -opaque receiver() :: #rx{}.
@@ -686,7 +695,11 @@ rekey_due(#tx{rekey_after = Limits, frames = Frames, bytes = Bytes, t0 = T0}, Le
 -doc """
 Initialize the reader from the controlling process.
 """.
-rx_start(Rx) ->
+rx_start(#rx{accept_compression = true}=Rx) ->
+    Z = zlib:open(),
+    ok = zlib:inflateInit(Z, -15),
+    Rx#rx{zstream = Z};
+rx_start(#rx{accept_compression = false}=Rx) ->
     Rx.
 
 -doc """
@@ -750,8 +763,10 @@ rx_flags(R, Len, Flags, Rest) ->
     case unpad(Flags, Rest) of
         {ok, Payload} ->
             case rx_payload(R, Flags, Payload) of
-                {ok, Ev, R1} -> rx_rekey(R1, Len, Flags, Ev);
-                {error, _} = Error -> Error
+                {ok, Ev, R1} ->
+                    rx_rekey(R1, Len, Flags, Ev);
+                {error, _} = Error ->
+                    Error
             end;
         {error, _} = Error ->
             Error
@@ -762,17 +777,23 @@ unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
 unpad(_, <<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
     PayloadLen = byte_size(Body) - PadLen,
     <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
-    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT andalso Padding =:= <<0:(PadLen * 8)>> of
-        true -> {ok, Payload};
-        false -> {error, bad_padding}
+    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT
+         andalso Padding =:= <<0:(PadLen * 8)>>
+    of
+        true ->
+            {ok, Payload};
+        false ->
+            {error, bad_padding}
     end;
 unpad(_, _) ->
     {error, bad_padding}.
 
 rx_payload(R, Flags, Payload) when Flags band ?F_TICK =/= 0 ->
     case Payload =:= <<>> andalso Flags band (?F_LAST bor ?F_COMP) =:= 0 of
-        true -> {ok, tick, R};
-        false -> {error, tick_with_payload}
+        true ->
+            {ok, tick, R};
+        false ->
+            {error, tick_with_payload}
     end;
 rx_payload(_, _, <<>>) ->
     {error, bad_length};
@@ -781,9 +802,11 @@ rx_payload(R, Flags, Payload) when Flags band ?F_COMP =/= 0 ->
         false ->
             {error, compression_not_accepted};
         true ->
-            case inflate_raw(Payload) of
-                {ok, Chunk} -> rx_data(R, Flags, Chunk);
-                {error, _} = Error -> Error
+            case inflate_raw(R#rx.zstream, Payload) of
+                {ok, Chunk} ->
+                    rx_data(R, Flags, Chunk);
+                {error, _} = Error ->
+                    Error
             end
     end;
 rx_payload(R, Flags, Payload) ->
@@ -806,40 +829,19 @@ rx_rekey(R, _Len, Flags, Ev) when Flags band ?F_REKEY =/= 0 ->
 rx_rekey(#rx{since = Since} = R, Len, _Flags, Ev) ->
     {ok, Ev, R#rx{since = Since + Len}}.
 
-%% Raw deflate, hard output limit enforced while inflating: safeInflate/2
-%% yields at most one fixed-size output buffer (16 KiB in OTP 27) per call and
-%% we stop as soon as the running total passes 65518, so a deflate bomb is
-%% never materialised.
-inflate_raw(Data) ->
-    Z = zlib:open(),
+inflate_raw(Z, Data) ->
     try
-        ok = zlib:inflateInit(Z, -15),
-        inflate_loop(Z, zlib:safeInflate(Z, Data), 0, [])
+        ok = zlib:inflateReset(Z),
+        Out = zlib:inflate(Z, Data),
+        OutSize = iolist_size(Out),
+        if
+            OutSize > ?MAX_PAYLOAD ->
+                {error, bad_compression};
+            OutSize =:= 0 ->
+                {error, bad_compression};
+            true ->
+                {ok, iolist_to_binary(Out)}
+        end
     catch
         error:_ -> {error, bad_compression}
-    after
-        zlib:close(Z)
-    end.
-
-inflate_loop(Z, {Status, Out}, Size, Acc) ->
-    OutSize = iolist_size(Out),
-    Size1 = Size + OutSize,
-    if
-        Size1 > ?MAX_PAYLOAD ->
-            {error, bad_compression};
-        Status =:= finished ->
-            %% `finished` only means the input is used up; inflateEnd/1 raises
-            %% data_error unless the deflate stream itself was complete. (Bytes
-            %% after the end of the stream are not detectable and ignored; the
-            %% frame is authenticated, so this is not an attack surface.)
-            ok = zlib:inflateEnd(Z),
-            case iolist_to_binary(lists:reverse([Out | Acc])) of
-                <<>> -> {error, bad_compression};
-                Chunk -> {ok, Chunk}
-            end;
-        OutSize =:= 0 ->
-            %% not finished and no progress: truncated stream
-            {error, bad_compression};
-        true ->
-            inflate_loop(Z, zlib:safeInflate(Z, <<>>), Size1, [Out | Acc])
     end.
