@@ -74,13 +74,17 @@ identity_test_() ->
       fun() -> with_dir(fun(B) ->
           O = keyopts(B),
           Dir = maps:get(dir, O),
-          {ok, #{generated := true, public := Pub, secret := Sec}} =
-              bouncer_keys:load_or_generate(<<"a@h">>, O),
+          {ok, Info1} = bouncer_keys:load_or_generate(<<"a@h">>, O),
+          Pub = bouncer_keys:public(Info1),
+          Sec = bouncer_keys:secret(Info1),
+          ?assert(bouncer_keys:generated(Info1)),
           ?assertEqual(8#600, mode(filename:join(Dir, "id_x25519"))),
           ?assertEqual(8#700, mode(Dir)),
           ?assertEqual({Pub, Sec}, crypto:generate_key(ecdh, x25519, Sec)),
-          {ok, #{generated := false, public := Pub, secret := Sec}} =
-              bouncer_keys:load_or_generate(<<"a@h">>, O),
+          {ok, Info2} = bouncer_keys:load_or_generate(<<"a@h">>, O),
+          ?assertNot(bouncer_keys:generated(Info2)),
+          ?assertEqual(Pub, bouncer_keys:public(Info2)),
+          ?assertEqual(Sec, bouncer_keys:secret(Info2)),
           ?assertEqual([], dotfiles(Dir))
       end) end},
      {"existing directory mode is never loosened",
@@ -134,7 +138,9 @@ identity_test_() ->
       fun() -> with_dir(fun(B) ->
           Sec = crypto:strong_rand_bytes(32),
           O = (keyopts(B))#{keygen => fun() -> {<<>>, Sec} end},
-          {ok, #{secret := Sec, generated := true}} = bouncer_keys:load_or_generate(<<"a@h">>, O),
+          {ok, Info} = bouncer_keys:load_or_generate(<<"a@h">>, O),
+          ?assertEqual(Sec, bouncer_keys:secret(Info)),
+          ?assert(bouncer_keys:generated(Info)),
           ?assertMatch({error, bad_keygen},
                        bouncer_keys:load_or_generate(<<"b@h">>,
                            (keyopts(filename:join(B, "x")))#{keygen => fun() -> {<<>>, <<1>>} end}))
@@ -154,9 +160,10 @@ identity_test_() ->
           Watcher ! stop,
           Loose = receive {watch_done, L} -> L end,
           ?assertEqual([], Loose),
-          [{ok, #{public := Pub}} | _] = Results,
-          ?assert(lists:all(fun({ok, #{public := P}}) -> P =:= Pub end, Results)),
-          ?assertEqual(1, length([x || {ok, #{generated := true}} <- Results])),
+          [{ok, First} | _] = Results,
+          Pub = bouncer_keys:public(First),
+          ?assert(lists:all(fun({ok, I}) -> bouncer_keys:public(I) =:= Pub end, Results)),
+          ?assertEqual(1, length([x || {ok, I} <- Results, bouncer_keys:generated(I)])),
           ?assertEqual([], dotfiles(Dir))
       end) end}},
      {"temp file never has loose permissions or leftovers",
@@ -407,8 +414,8 @@ add_remove_test_() ->
           K = <<0:256>>,
           F = bouncer_keys:fingerprint(K),
           ?assertEqual(F, bouncer_keys:fingerprint(K)),
-          ?assertMatch("SHA256:" ++ _, F),
-          ?assertEqual(7 + 43, length(F)),
+          ?assertMatch(<<"SHA256:", _/binary>>, F),
+          ?assertEqual(7 + 43, byte_size(F)),
           ?assertNotEqual(F, bouncer_keys:fingerprint(<<1:256>>))
       end},
      {"authorized_line round-trips through the loader",

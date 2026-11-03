@@ -290,9 +290,9 @@ process_msg3(Msg3, Suite, State2, Opts) ->
             {error, handshake_failed}
     end.
 
-handshake_state(Suite, Prologue, Keys, Role) when is_map(Keys) ->
-    case {maps:find(public, Keys), maps:find(secret, Keys)} of
-        {{ok, <<_:32/binary>> = Public}, {ok, <<_:32/binary>> = Secret}} ->
+handshake_state(Suite, Prologue, Keys, Role) ->
+    try {bouncer_keys:public(Keys), bouncer_keys:secret(Keys)} of
+        {<<_:32/binary>> = Public, <<_:32/binary>> = Secret} ->
             KeyPair = enoise_keypair:new(dh25519, Secret, Public),
             enoise:handshake([{noise, bouncer_protocol:noise_name(Suite)},
                               {prologue, Prologue},
@@ -300,9 +300,9 @@ handshake_state(Suite, Prologue, Keys, Role) when is_map(Keys) ->
                              Role);
         _ ->
             {error, bad_keys}
-    end;
-handshake_state(_, _, _, _) ->
-    {error, bad_keys}.
+    catch
+        _:_ -> {error, bad_keys}
+    end.
 
 remote_public_key(State) ->
     enoise_keypair:pubkey(enoise_hs_state:remote_keys(State)).

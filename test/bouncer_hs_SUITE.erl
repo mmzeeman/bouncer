@@ -69,9 +69,9 @@ success(Suite, Config) ->
     RResult = responder_result(Pid),
     {ok, RResultMap} = RResult,
     ?assertEqual(RName, maps:get(remote_name, IResult)),
-    ?assertEqual(maps:get(public, RKeys), maps:get(remote_key, IResult)),
+    ?assertEqual(bouncer_keys:public(RKeys), maps:get(remote_key, IResult)),
     ?assertEqual(IName, maps:get(remote_name, RResultMap)),
-    ?assertEqual(maps:get(public, IKeys), maps:get(remote_key, RResultMap)),
+    ?assertEqual(bouncer_keys:public(IKeys), maps:get(remote_key, RResultMap)),
     ?assertEqual(Suite, maps:get(suite, IResult)),
     ?assertEqual(Suite, maps:get(suite, RResultMap)),
     Payload = crypto:strong_rand_bytes(1024 * 1024),
@@ -114,7 +114,7 @@ responder_rejects_unknown_initiator(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
@@ -135,7 +135,7 @@ responder_rejects_denied_initiator(Config) ->
     {ok, _} = bouncer_keys:add_peer(IName, enoise_keypair:pubkey(OtherKeyPair),
                                     #{authorized_dirs => [?config(r_auth, Config)],
                                       node_name => IName}),
-    ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
@@ -151,8 +151,8 @@ known_key_claiming_other_name(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
-    ok = add_peer(IName, maps:get(public, IKeys), ?config(r_auth, Config)),
+    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(IName, bouncer_keys:public(IKeys), ?config(r_auth, Config)),
     SpoofedName = <<"spoof@host">>,
     IOpts = (initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512))
                 #{own_name => SpoofedName},
@@ -317,7 +317,7 @@ logs_do_not_contain_secret_key(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     LogFile = filename:join(?config(root, Config), "captured.log"),
@@ -336,7 +336,7 @@ logs_do_not_contain_secret_key(Config) ->
         ok = logger:remove_handler(Handler)
     end,
     {ok, Logs} = file:read_file(LogFile),
-    Secrets = [maps:get(secret, IKeys), maps:get(secret, RKeys)],
+    Secrets = [bouncer_keys:secret(IKeys), bouncer_keys:secret(RKeys)],
     [begin
          ?assertEqual(nomatch, binary:match(Logs, base64:encode(Secret))),
          ?assertEqual(nomatch, binary:match(Logs, Secret))
@@ -354,8 +354,8 @@ authorize_both(Config) ->
     RName = ?config(r_name, Config),
     IKeys = ?config(i_keys, Config),
     RKeys = ?config(r_keys, Config),
-    ok = add_peer(RName, maps:get(public, RKeys), ?config(i_auth, Config)),
-    ok = add_peer(IName, maps:get(public, IKeys), ?config(r_auth, Config)).
+    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(IName, bouncer_keys:public(IKeys), ?config(r_auth, Config)).
 
 add_peer(Name, Public, AuthDir) ->
     {ok, _Path} = bouncer_keys:add_peer(Name, Public,
@@ -405,8 +405,8 @@ start_malicious_responder(Target, MessageName, Keys) ->
                             bouncer_protocol:parse_hello_header(HelloHeader, [2]),
                         {ok, Msg1} = gen_tcp:recv(Socket, 32, 1000),
                         Prologue = bouncer_protocol:prologue(HelloHeader, Target),
-                        KeyPair = enoise_keypair:new(dh25519, maps:get(secret, Keys),
-                                                     maps:get(public, Keys)),
+                        KeyPair = enoise_keypair:new(dh25519, bouncer_keys:secret(Keys),
+                                                     bouncer_keys:public(Keys)),
                         {ok, State0} =
                             enoise:handshake([{noise,
                                               bouncer_protocol:noise_name(aesgcm_sha512)},

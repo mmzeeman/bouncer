@@ -27,6 +27,8 @@ Secret key material is never logged and never part of an error term.
          remove_peer/3,
          valid_node_name/1]).
 
+-export([public/1, secret/1, key_fingerprint/1, generated/1]).
+
 -export_type([opts/0, node_name/0, key_info/0]).
 
 -define(KEY_FILE, "id_x25519").
@@ -41,10 +43,12 @@ Secret key material is never logged and never part of an error term.
                   authorized_dirs => [file:filename()] | string(),
                   keygen => fun(() -> {binary(), binary()}),
                   node_name => node_name()}.
--type key_info() :: #{public := binary(),
-                      secret := binary(),
-                      fingerprint := string(),
-                      generated := boolean()}.
+%% The secret is only reachable through secret/1, so that printing or logging
+%% a key_info() cannot leak it.
+-opaque key_info() :: #{public := binary(),
+                        secret := fun(() -> binary()),
+                        fingerprint := binary(),
+                        generated := boolean()}.
 
 %%% ------------------------------------------------------------------
 %%% Settings
@@ -227,7 +231,8 @@ publish_key(Name, Dir, Path, Secret) ->
     case publish(Dir, Path, 8#600, [base64:encode(Secret), $\n]) of
         ok ->
             Info = key_info(Secret, true),
-            #{public := Pub, fingerprint := Fp} = Info,
+            Pub = public(Info),
+            Fp = key_fingerprint(Info),
             logger:notice("bouncer_keys: generated new identity key ~ts~n"
                           "Add this line to the authorized directory of other nodes:~n~ts"
                           "Fingerprint: ~ts",
@@ -260,7 +265,7 @@ key_info(Secret, Generated) ->
     KP = enoise_keypair:new(dh25519, Secret, undefined),
     Pub = enoise_keypair:pubkey(KP),
     #{public => Pub,
-      secret => Secret,
+      secret => fun() -> Secret end,
       fingerprint => fingerprint(Pub),
       generated => Generated}.
 
@@ -309,7 +314,9 @@ fingerprint to stderr. Never generates a key. Halts with status 1 on error.
 print_public() ->
     Name = local_node_name(),
     case load_or_generate(Name, #{generate => false}) of
-        {ok, #{public := Pub, fingerprint := Fp}} ->
+        {ok, Info} ->
+            Pub = public(Info),
+            Fp = key_fingerprint(Info),
             io:put_chars(authorized_line(Name, Pub)),
             io:format(standard_error, "~ts~n", [Fp]);
         {error, Reason} ->
@@ -325,10 +332,30 @@ fail(Fmt, Args) ->
 %%% ------------------------------------------------------------------
 
 -doc "`SHA256:` followed by the unpadded base64 of the SHA-256 of the public key.".
--spec fingerprint(binary()) -> string().
+-spec fingerprint(binary()) -> binary().
 fingerprint(PublicKey) when is_binary(PublicKey) ->
-    "SHA256:" ++ binary_to_list(base64:encode(crypto:hash(sha256, PublicKey),
-                                              #{padding => false})).
+    <<"SHA256:", (base64:encode(crypto:hash(sha256, PublicKey),
+                                #{padding => false}))/binary>>.
+
+%%% ------------------------------------------------------------------
+%%% key_info() accessors
+%%% ------------------------------------------------------------------
+
+-doc "The public key (32 bytes).".
+-spec public(key_info()) -> binary().
+public(#{public := Public}) -> Public.
+
+-doc "The secret key (32 bytes). Never log or print the result.".
+-spec secret(key_info()) -> binary().
+secret(#{secret := Secret}) -> Secret().
+
+-doc "The fingerprint of the public key, see `fingerprint/1`.".
+-spec key_fingerprint(key_info()) -> binary().
+key_fingerprint(#{fingerprint := Fingerprint}) -> Fingerprint.
+
+-doc "True when `load_or_generate/2` created this key.".
+-spec generated(key_info()) -> boolean().
+generated(#{generated := Generated}) -> Generated.
 
 -doc "The line to put in an authorized directory file: `<name> <base64key>\\n`.".
 -spec authorized_line(node_name(), binary()) -> binary().
@@ -438,7 +465,7 @@ add_peer_in(Dir, Name, Pub) ->
 -doc "Deletes the files of `Name` whose key has fingerprint `Fingerprint`.".
 -spec remove_peer(binary(), string() | binary(), opts()) -> ok | {error, term()}.
 remove_peer(Name, Fingerprint, Opts) ->
-    Fp = to_list(Fingerprint),
+    Fp = unicode:characters_to_binary(Fingerprint),
     Matching = [P || {P, N, K} <- load_all(dirs_for(Opts)),
                      N =:= Name, fingerprint(K) =:= Fp],
     Results = [file:delete(P) || P <- Matching],
