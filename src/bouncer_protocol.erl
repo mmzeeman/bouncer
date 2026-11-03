@@ -601,24 +601,28 @@ deflate_raw(Data) ->
 
 emit(#tx{padding = Padding} = S, Flags0, Payload) ->
     {Flags1, Body} = pad(Padding, Flags0, Payload),
-    Len = 1 + byte_size(Body) + ?TAG_LEN,
+
+    CipherLen = 1 + byte_size(Body) + ?TAG_LEN,
+
     Now = rekey_clock(S),
-    Rekey = rekey_due(S, Len, Now),
+    Rekey = rekey_due(S, CipherLen, Now),
+
     Flags = case Rekey of
-                true -> Flags1 bor ?F_REKEY;
+                true  -> Flags1 bor ?F_REKEY;
                 false -> Flags1
             end,
-    {ok, CS1, Cipher} = encrypt(S#tx.cs, <<Len:16>>, <<Flags, Body/binary>>),
-    Len = byte_size(Cipher),
-    Frame = [<<Len:16>>, Cipher],
+
+    {ok, CS1, Cipher} = encrypt(S#tx.cs, <<CipherLen:16>>, <<Flags, Body/binary>>),
+    Frame = [<<CipherLen:16>>, Cipher],
+
     case Rekey of
         true ->
             {Frame, S#tx{cs = enoise_cipher_state:rekey(CS1), frames = 0, bytes = 0, t0 = Now}};
         false ->
-            {Frame, S#tx{cs = CS1, frames = S#tx.frames + 1, bytes = S#tx.bytes + Len}}
+            {Frame, S#tx{cs = CS1, frames = S#tx.frames + 1, bytes = S#tx.bytes + CipherLen}}
     end.
 
-%% enoise only ever returns {ok, _, _} here; a failure would be a bug.
+%%% enoise only ever returns {ok, _, _} here; a failure would be a bug.
 encrypt(CS, AD, Plain) ->
     {ok, _, _} = enoise_cipher_state:encrypt_with_ad(CS, AD, Plain).
 
