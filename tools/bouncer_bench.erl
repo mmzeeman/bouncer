@@ -426,9 +426,12 @@ collect_mailbox_workers(Ref, Monitors, Total) ->
 
 check_rpc(Node, Payload, Size) ->
     case rpc:call(Node, erlang, byte_size, [Payload], 60000) of
-        Size -> ok;
-        {badrpc, Reason} -> error({rpc_failed, Reason});
-        Other -> error({unexpected_rpc_result, Other, Size})
+        Size ->
+            ok;
+        {badrpc, Reason} ->
+            error({rpc_failed, Reason});
+        Other ->
+            error({unexpected_rpc_result, Other, Size})
     end.
 
 make_payload(Size, compressible) ->
