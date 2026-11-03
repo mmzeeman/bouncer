@@ -1,4 +1,4 @@
-# bouncer
+# bouncer (WIP)
 
 Erlang distribution over a Noise transport, built on
 [enoise](https://github.com/aeternity/enoise) (master branch).
