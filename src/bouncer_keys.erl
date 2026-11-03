@@ -16,16 +16,18 @@ Secret key material is never logged and never part of an error term.
 
 -include_lib("kernel/include/file.hrl").
 
--export([node_key_dir/2,
-         authorized_dirs/2,
-         load_or_generate/2,
-         print_public/0,
-         fingerprint/1,
-         authorized_line/2,
-         check_peer/3,
-         add_peer/3,
-         remove_peer/3,
-         valid_node_name/1]).
+-export([
+    node_key_dir/2,
+    authorized_dirs/2,
+    load_or_generate/2,
+    print_public/0,
+    fingerprint/1,
+    authorized_line/2,
+    check_peer/3,
+    add_peer/3,
+    remove_peer/3,
+    valid_node_name/1
+]).
 
 -export_type([opts/0, node_name/0, key_info/0]).
 
@@ -101,8 +103,10 @@ generate_enabled(Opts) ->
     case setting(generate, Opts) of
         {ok, B} when is_boolean(B) ->
             B;
-        {ok, "true"} -> true;
-        {ok, "false"} -> false;
+        {ok, "true"} ->
+            true;
+        {ok, "false"} ->
+            false;
         {ok, Other} ->
             logger:warning("bouncer_keys: invalid value for generate: ~p, using true", [Other]),
             true;
@@ -116,8 +120,10 @@ setting(Key, Opts) ->
             Found;
         error ->
             case flag(atom_to_list(Key)) of
-                {ok, _} = Found -> Found;
-                error -> env(Key)
+                {ok, _} = Found ->
+                    Found;
+                error ->
+                    env(Key)
             end
     end.
 
@@ -188,8 +194,10 @@ load_or_generate(NodeName, Opts) ->
     case name_to_binary(NodeName) of
         {ok, Bin} ->
             case valid_node_name(Bin) of
-                true -> load_or_generate_1(Bin, Opts);
-                false -> {error, invalid_node_name}
+                true ->
+                    load_or_generate_1(Bin, Opts);
+                false ->
+                    {error, invalid_node_name}
             end;
         error ->
             {error, invalid_node_name}
@@ -205,8 +213,10 @@ load_or_generate_1(Name, Opts) ->
             Error;
         missing ->
             case generate_enabled(Opts) of
-                true -> generate(Name, Dir, Path, Opts);
-                false -> {error, {no_key, Path}}
+                true ->
+                    generate(Name, Dir, Path, Opts);
+                false ->
+                    {error, {no_key, Path}}
             end
     end.
 
@@ -235,9 +245,12 @@ publish_key(Name, Dir, Path, Secret) ->
             {ok, Info};
         {error, eexist} ->
             case read_key(Path) of
-                {ok, Winner} -> {ok, key_info(Winner, false)};
-                missing -> {error, {no_key, Path}};
-                {error, _} = Error -> Error
+                {ok, Winner} ->
+                    {ok, key_info(Winner, false)};
+                missing ->
+                    {error, {no_key, Path}};
+                {error, _} = Error ->
+                    Error
             end;
         {error, Reason} ->
             {error, {write_failed, Reason, Path}}
@@ -250,8 +263,10 @@ default_keygen() ->
 %% The reason of a crashing keygen is deliberately dropped: it may contain key material.
 run_keygen(Keygen) ->
     try Keygen() of
-        {_Pub, <<_:32/binary>> = Secret} -> {ok, Secret};
-        _ -> {error, bad_keygen}
+        {_Pub, <<_:32/binary>> = Secret} ->
+            {ok, Secret};
+        _ ->
+            {error, bad_keygen}
     catch
         _:_ -> {error, keygen_failed}
     end.
@@ -270,9 +285,12 @@ read_key(Path) ->
             {error, {symlink_refused, Path}};
         {ok, #file_info{type = regular, mode = Mode, size = Size}} ->
             if
-                Mode band 8#077 =/= 0 -> {error, {insecure_permissions, Path}};
-                Size > ?MAX_KEY_FILE -> {error, {bad_key, Path}};
-                true -> read_key_content(Path)
+                Mode band 8#077 =/= 0 ->
+                    {error, {insecure_permissions, Path}};
+                Size > ?MAX_KEY_FILE ->
+                    {error, {bad_key, Path}};
+                true ->
+                    read_key_content(Path)
             end;
         {ok, _} ->
             {error, {not_regular_file, Path}};
@@ -286,8 +304,10 @@ read_key_content(Path) ->
     case file:read_file(Path) of
         {ok, Bin} ->
             case decode_key(string:trim(Bin)) of
-                {ok, Secret} -> {ok, Secret};
-                error -> {error, {bad_key, Path}}
+                {ok, Secret} ->
+                    {ok, Secret};
+                error -> {error,
+                          {bad_key, Path}}
             end;
         {error, Reason} ->
             {error, {Reason, Path}}
@@ -295,8 +315,10 @@ read_key_content(Path) ->
 
 decode_key(B64) ->
     try base64:decode(B64) of
-        <<_:32/binary>> = Key -> {ok, Key};
-        _ -> error
+        <<_:32/binary>> = Key ->
+            {ok, Key};
+        _ ->
+            error
     catch
         _:_ -> error
     end.
