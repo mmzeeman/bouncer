@@ -59,9 +59,7 @@ respond(Socket, OwnName, Keys, Opts) ->
                     ok ->
                         case handshake_deadline(Opts) of
                             {ok, Deadline} ->
-                                finish(Socket,
-                                       respond_handshake(Socket, OwnName, Keys, Opts,
-                                                         Deadline));
+                                finish(Socket, respond_handshake(Socket, OwnName, Keys, Opts, Deadline));
                             {error, _} = Error ->
                                 finish(Socket, Error)
                         end;
@@ -203,8 +201,10 @@ respond_header(Socket, OwnName, Keys, Opts, AcceptedIds, Deadline) ->
                                        2 -> unsupported_suite
                                    end,
                     case gen_tcp:send(Socket, bouncer_protocol:reply_reject(Status)) of
-                        ok -> {error, StatusReason};
-                        {error, Reason} -> {error, Reason}
+                        ok ->
+                            {error, StatusReason};
+                        {error, Reason} ->
+                            {error, Reason}
                     end;
                 {error, Reason} ->
                     logger:debug("bouncer_hs: closing connection with invalid hello header"),
@@ -308,8 +308,11 @@ remote_public_key(State) ->
     enoise_keypair:pubkey(enoise_hs_state:remote_keys(State)).
 
 result(#{tx := Send, rx := Recv}, RemoteName, RemoteKey, Suite) ->
-    #{send => Send, recv => Recv, remote_name => RemoteName,
-      remote_key => RemoteKey, suite => Suite}.
+    #{send => Send,
+      recv => Recv,
+      remote_name => RemoteName,
+      remote_key => RemoteKey,
+      suite => Suite}.
 
 accepted_suite_ids(Opts) ->
     Suites = maps:get(accept_suites, Opts, [aesgcm_sha512]),

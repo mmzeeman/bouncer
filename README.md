@@ -3,31 +3,49 @@
 Erlang distribution over a Noise transport, built on
 [enoise](https://github.com/aeternity/enoise) (master branch).
 
-## Build
+## Build and boot-time code path
 
     rebar3 compile
 
-## Using the `bounce` distribution protocol
+`bouncer_dist` is loaded before applications start; it does not depend on the
+`bouncer` application or application environment. Make `bouncer`, `enoise`, and
+all dependencies available on the boot code path with `-pa` or `ERL_LIBS`.
+For example, from the project directory:
+
+    erl -pa _build/default/lib/*/ebin -proto_dist bouncer \
+        -name a@127.0.0.1 -kernel net_ticktime 8 +zdbbl 1000000 \
+        -bouncer dir /var/lib/bouncer/a \
+        -bouncer authorized_dirs /var/lib/bouncer/a/authorized.d
+
+The other node needs its own `dir` and authorized directory containing the
+first node's public authorization line, and vice versa. Generate/export public
+lines with `bouncer_keys`; never copy a private key between nodes.
 
 The distribution module is `bouncer_dist`, selected with `-proto_dist bouncer`
 (Erlang appends `_dist` to the name). The compiled beams must be in the code
 path. Note that epmd is still used for name registration unless you
 replace it.
 
-Start two nodes from the project directory:
-
-    rebar3 compile
-    erl -pa _build/default/lib/*/ebin -proto_dist bouncer -sname a
-    erl -pa _build/default/lib/*/ebin -proto_dist bouncer -sname b
-
-Then from node `b`:
-
-    (b@host)1> net_adm:ping('a@host').
-    pong
-
-With a release, put it in `vm.args`:
+With a release, put these options in `vm.args`:
 
     -proto_dist bouncer
+    -bouncer dir /var/lib/bouncer/a
+    -bouncer authorized_dirs /var/lib/bouncer/a/authorized.d
+    +zdbbl 1000000
+
+## Carrier settings
+
+Values can be provided as `-bouncer Key Value` arguments or through matching
+`BOUNCER_KEY` environment variables. Explicit options take precedence over
+flags, flags over environment, and environment over defaults. Invalid values
+make distribution startup fail with the setting name and accepted values.
+Transport policy options include `chunk_size`, `padding`, `compression`,
+`rekey_after`, `max_packet`, `accept_compression`, and
+`max_bytes_without_rekey`. Carrier options are `handshake_timeout_ms` (5000),
+`suite` (`aesgcm_sha512`), `accept_suites` (`aesgcm_sha512`),
+`max_pending` (64), and `send_timeout_ms` (30000). `+zdbbl` configures the
+emulator distribution buffer limit; the carrier relies on it and TCP send
+timeouts for backpressure.
 
 ## Noise handshake protocol
 
@@ -190,9 +208,3 @@ maps; invalid values are rejected with an error naming the allowed values).
 Padded frames are always accepted. Ticks are padded like data. Inflation is
 incremental with a hard 65518 byte limit. Keep compression off when
 attacker-chosen data is mixed with secrets (CRIME/BREACH).
-
-The distribution callback currently delegates to `inet_tcp_dist`; this
-handshake protocol is not yet connected to the distribution transport.
-
-Note: `bounce_dist` currently delegates to `inet_tcp_dist`; the Noise
-transport is still to be implemented.
