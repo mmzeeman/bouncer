@@ -38,7 +38,7 @@ listen(Name, Host) ->
                     logger:notice("bouncer_dist: suite=~p accept_suites=~p fingerprint=~ts",
                                   [maps:get(suite, Settings),
                                    maps:get(accept_suites, Settings),
-                                   bouncer_keys:key_fingerprint(Keys)]),
+                                   bouncer_keys:fingerprint(Keys)]),
                     inet_tcp_dist:listen(Name, Host);
                 {error, _} = Error ->
                     Error
@@ -460,7 +460,7 @@ do_expected_name_check(Expected, Actual, _Packet) ->
     {error, {authenticated_name_mismatch, Expected, Actual}}.
 
 maybe_log_unauthorized({initiator, _NetAddress, _Type, _Version}, Result) ->
-    Fingerprint = bouncer_keys:key_fingerprint(maps:get(keys, settings_value())),
+    Fingerprint = bouncer_keys:fingerprint(maps:get(keys, settings_value())),
     logger:warning("peer closed the connection during handshake; our key is probably not authorized there: ~p ~ts",
                    [maps:get(remote_name, Result), Fingerprint]);
 maybe_log_unauthorized(_, _) ->
@@ -527,7 +527,7 @@ is_node_name(Node) ->
 stop_connection(Node, Reason) ->
     Fingerprint = case settings() of
                       {ok, Settings} ->
-                          bouncer_keys:key_fingerprint(maps:get(keys, Settings));
+                          bouncer_keys:fingerprint(maps:get(keys, Settings));
                       _ ->
                           "unavailable"
                   end,
@@ -546,7 +546,7 @@ log_io_error(NodeName, Reason) ->
 identity_fingerprint() ->
     case settings() of
         {ok, Settings} ->
-            bouncer_keys:key_fingerprint(maps:get(keys, Settings));
+            bouncer_keys:fingerprint(maps:get(keys, Settings));
         _ ->
             "unavailable"
     end.

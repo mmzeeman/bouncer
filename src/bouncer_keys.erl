@@ -29,7 +29,7 @@ Secret key material is never logged and never part of an error term.
     valid_node_name/1
 ]).
 
--export([public/1, secret/1, key_fingerprint/1, generated/1]).
+-export([public/1, secret/1, generated/1]).
 
 -export_type([opts/0, node_name/0, key_info/0]).
 
@@ -242,7 +242,7 @@ publish_key(Name, Dir, Path, Secret) ->
         ok ->
             Info = key_info(Secret, true),
             Pub = public(Info),
-            Fp = key_fingerprint(Info),
+            Fp = fingerprint(Info),
             logger:notice("bouncer_keys: generated new identity key ~ts~n"
                           "Add this line to the authorized directory of other nodes:~n~ts"
                           "Fingerprint: ~ts",
@@ -338,7 +338,7 @@ print_public() ->
     case load_or_generate(Name, #{generate => false}) of
         {ok, Info} ->
             Pub = public(Info),
-            Fp = key_fingerprint(Info),
+            Fp = fingerprint(Info),
             io:put_chars(authorized_line(Name, Pub)),
             io:format(standard_error, "~ts~n", [Fp]);
         {error, Reason} ->
@@ -353,8 +353,12 @@ fail(Fmt, Args) ->
 %%% Public key helpers
 %%% ------------------------------------------------------------------
 
--doc "`SHA256:` followed by the unpadded base64 of the SHA-256 of the public key.".
--spec fingerprint(binary()) -> binary().
+-doc """
+`SHA256:` followed by the unpadded base64 of the SHA-256 of the public key.
+Accepts a bare public key or a `key_info()`.
+""".
+-spec fingerprint(binary() | key_info()) -> binary().
+fingerprint(#{fingerprint := Fingerprint}) -> Fingerprint;
 fingerprint(PublicKey) when is_binary(PublicKey) ->
     <<"SHA256:", (base64:encode(crypto:hash(sha256, PublicKey),
                                 #{padding => false}))/binary>>.
@@ -370,10 +374,6 @@ public(#{public := Public}) -> Public.
 -doc "The secret key (32 bytes). Never log or print the result.".
 -spec secret(key_info()) -> binary().
 secret(#{secret := Secret}) -> Secret().
-
--doc "The fingerprint of the public key, see `fingerprint/1`.".
--spec key_fingerprint(key_info()) -> binary().
-key_fingerprint(#{fingerprint := Fingerprint}) -> Fingerprint.
 
 -doc "True when `load_or_generate/2` created this key.".
 -spec generated(key_info()) -> boolean().
