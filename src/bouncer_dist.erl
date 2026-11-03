@@ -16,7 +16,9 @@
 -export([
     do_accept/6,
     do_setup/6,
-    reader/4,
+
+    start_reader/4,
+    receive_data/4,
 
     start_writer/4,
     writer/4,
@@ -203,7 +205,7 @@ initialize_controller(Socket, Result, Settings, Role) ->
 
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
-    Reader = spawn_link(?MODULE, reader, [Socket, Receiver, Role, OwnName]),
+    Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
     Writer = spawn_link(?MODULE, start_writer, [Socket, Sender, self(), OwnName]),
     Parent ! {Ref, {ok, self(), Reader, Writer}},
     controller_loop(Socket, Writer, undefined).
@@ -268,17 +270,17 @@ controller_wait_packet(Socket, Writer, DHandle) ->
             exit({controller_child_exit, Reason})
     end.
 
-reader(Socket, Receiver, Role, OwnName) ->
+start_reader(Socket, Receiver0, Role, OwnName) ->
+    Receiver = bouncer_protocol:rx_start(Receiver0),
     reader_loop(Socket, Receiver, Role, OwnName, []).
 
 reader_loop(Socket, Receiver, Role, OwnName, Events) ->
     receive
         {read, From, Ref, Timeout} ->
-            read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout,
-                           Events);
+            read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout, Events);
         {data_phase, DHandle} ->
             deliver_events(Events, DHandle),
-            receive_data(Socket, Receiver, DHandle, OwnName)
+            ?MODULE:receive_data(Socket, Receiver, DHandle, OwnName)
     end.
 
 read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout, Events) ->
@@ -319,7 +321,7 @@ receive_data(Socket, Receiver, DHandle, OwnName) ->
             case bouncer_protocol:rx_feed(Receiver, Bytes) of
                 {ok, Events, Receiver1} ->
                     deliver_events(Events, DHandle),
-                    receive_data(Socket, Receiver1, DHandle, OwnName);
+                    ?MODULE:receive_data(Socket, Receiver1, DHandle, OwnName);
                 {error, Reason, _Dead} ->
                     log_rx_error(OwnName, Reason),
                     gen_tcp:close(Socket),
