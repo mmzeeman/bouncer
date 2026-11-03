@@ -17,8 +17,11 @@
     do_accept/6,
     do_setup/6,
     reader/4,
+
     start_writer/4,
     writer/4,
+    writer_data/4,
+
     controller_init/6,
     tick/1,
     getstat/1
@@ -338,8 +341,15 @@ deliver_events([tick | Rest], DHandle) ->
     erlang:dist_ctrl_put_data(DHandle, <<>>),
     deliver_events(Rest, DHandle).
 
-start_writer(Socket, Sender, Controller, OwnName) ->
-    ?MODULE:writer(Socket, bouncer_protocol:tx_start(Sender), Controller, OwnName).
+
+%%
+%% Writer
+%%
+
+
+start_writer(Socket, Sender0, Controller, OwnName) ->
+    Sender = bouncer_protocol:tx_start(Sender0),
+    ?MODULE:writer(Socket, Sender, Controller, OwnName).
 
 writer(Socket, Sender, Controller, OwnName) ->
     receive
@@ -355,13 +365,14 @@ writer(Socket, Sender, Controller, OwnName) ->
             end;
         tick ->
             case send_tick(Socket, Sender) of
-                {ok, Sender1} -> writer(Socket, Sender1, Controller, OwnName);
+                {ok, Sender1} ->
+                    ?MODULE:writer(Socket, Sender1, Controller, OwnName);
                 {error, Reason} ->
                     log_io_error(OwnName, {tick, Reason}),
                     exit({send_error, Reason})
             end;
         data_phase ->
-            writer_data(Socket, Sender, Controller, OwnName)
+            ?MODULE:writer_data(Socket, Sender, Controller, OwnName)
     end.
 
 writer_data(Socket, Sender, Controller, OwnName) ->
@@ -370,7 +381,7 @@ writer_data(Socket, Sender, Controller, OwnName) ->
             case write_packet(Socket, Sender, Packet) of
                 {ok, Sender1} ->
                     Controller ! {packet_sent, self()},
-                    writer_data(Socket, Sender1, Controller, OwnName);
+                    ?MODULE:writer_data(Socket, Sender1, Controller, OwnName);
                 {error, Reason} ->
                     log_io_error(OwnName, {send, Reason}),
                     exit({send_error, Reason})
@@ -378,7 +389,7 @@ writer_data(Socket, Sender, Controller, OwnName) ->
         tick ->
             case send_tick(Socket, Sender) of
                 {ok, Sender1} ->
-                    writer_data(Socket, Sender1, Controller, OwnName);
+                    ?MODULE:writer_data(Socket, Sender1, Controller, OwnName);
                 {error, Reason} ->
                     log_io_error(OwnName, {tick, Reason}),
                     exit({send_error, Reason})
