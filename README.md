@@ -35,6 +35,154 @@ Highlights:
 - A benchmark harness, `tools/bouncer_bench`, that measures bouncer against
   plain `inet_tcp` for latency, throughput, and concurrent mailbox traffic.
 
+## Setup: four nodes on four machines (alice, bob, carol, dave)
+
+A walkthrough for a small cluster of four machines in the `example.com`
+domain, one node per machine, using the `bouncer_guests` helper for all
+key and authorization management:
+   Machine | Node name |
+ |---|---|
+ | alice.example.com | `alice@alice.example.com` |
+ | bob.example.com | `bob@bob.example.com` |
+ | carol.example.com | `carol@carol.example.com` |
+ | dave.example.com | `dave@dave.example.com` |
+
+The host part of a node name is resolved and looked up through epmd, so
+each machine's name must resolve (DNS or `/etc/hosts`). The walkthrough
+builds a full mesh, but authorization is per node, so any subset of
+peer authorizations works too.
+
+`bouncer_guests` only edits the files that `bouncer_keys` reads at
+handshake time; it never talks to a running node, and private keys never
+leave their machine.
+
+### 1. Install
+
+Build once and copy the compiled libraries and the helper to each
+machine:
+
+    rebar3 compile
+    rsync -a _build/default/lib/ alice.example.com:/opt/bouncer/lib/
+    rsync -a tools/bouncer_guests alice.example.com:/usr/local/bin/
+
+Repeat for bob, carol and dave. The escript needs the bouncer beams on
+its code path; `ERL_LIBS=/opt/bouncer/lib` covers that.
+
+### 2. Create the identity (on each machine)
+
+    bouncer_guests init --node alice@alice.example.com \
+        --dir /var/lib/bouncer/alice
+
+This creates the key directory and the X25519 identity key (`id_x25519`,
+mode 600; the directory mode 700), and prints this node's authorized
+line and fingerprint:
+
+    alice@alice.example.com <base64 public key>
+    Fingerprint: SHA256:...
+
+Without `--dir` the tool uses `$BOUNCER_DIR`, then the user config
+directory. Repeat on bob, carol and dave with their own names and
+directories. Use `--no-generate` to create only the directories.
+
+### 3. Exchange and install the public lines
+
+A node accepts a connection only when the peer's announced name and
+public key match an entry in its authorized directories. For the full
+mesh, every node needs the other three lines. Since `add` accepts the
+exact output of `show --self` on stdin, a peer's line can be pulled
+straight over ssh:
+
+    ssh bob.example.com \
+        bouncer_guests show --self --node bob@bob.example.com \
+            --dir /var/lib/bouncer/bob \
+    | bouncer_guests add - --dir /var/lib/bouncer/alice
+
+Lines starting with `#` are ignored, so the tool's output can be piped
+as is. On alice, repeat for carol and dave, then on every other machine
+for its three peers:
+ | On machine | authorized lines from |
+ |---|---|
+ | alice.example.com | bob, carol, dave |
+ | bob.example.com | alice, carol, dave |
+ | carol.example.com | alice, bob, dave |
+ | dave.example.com | alice, bob, carol |
+
+However the lines travel, verify them out-of-band: pass the expected
+fingerprint and the command refuses to install a mismatching key (exit
+code 4):
+
+    bouncer_guests add --line 'bob@bob.example.com AAAA...' \
+        --fingerprint SHA256:... --dir /var/lib/bouncer/alice
+
+`--comment` records where an entry came from, and the guest list can be
+inspected afterwards:
+
+    bouncer_guests list --dir /var/lib/bouncer/alice
+    bouncer_guests show bob@bob.example.com --dir /var/lib/bouncer/alice
+    bouncer_guests check bob@bob.example.com SHA256:... \
+        --dir /var/lib/bouncer/alice && echo verified
+
+Authorization is per node and directional: leaving entries out restricts
+who may connect, and both ends must authorize each other for a
+connection to succeed.
+
+### 4. Configure and start (on each machine)
+
+Put the options in the release's `vm.args` (or pass them as `erl`
+flags):
+
+    -name alice@alice.example.com
+    -proto_dist bouncer
+    -bouncer dir /var/lib/bouncer/alice
+
+`authorized_dirs` defaults to `<dir>/authorized.d`, which is where
+`bouncer_guests` writes. The distribution port is chosen dynamically
+and registered with epmd; pin it with the usual kernel options:
+
+    -kernel inet_dist_listen_min 9100
+    -kernel inet_dist_listen_max 9100
+
+Only two ports must be reachable on each machine: epmd (TCP 4369) and
+the distribution port. Bouncer encrypts and authenticates the
+distribution channel itself, but epmd is plain and unauthenticated, so
+restrict both ports to the cluster machines in the firewall.
+
+### 5. Connect and verify
+
+On alice:
+
+    (alice@alice.example.com)1> net_adm:ping(bob@bob.example.com).
+    pong
+    (alice@alice.example.com)2> net_adm:ping(carol@carol.example.com).
+    pong
+    (alice@alice.example.com)3> net_adm:ping(dave@dave.example.com).
+    pong
+    (alice@alice.example.com)4> nodes().
+    [bob@bob.example.com,carol@carol.example.com,dave@dave.example.com]
+
+A peer that is not authorized answers `pang`: the responder rejects it
+during the handshake.
+
+### 6. Revoking a peer
+
+Remove an entry whenever a peer must no longer be accepted:
+
+    bouncer_guests remove carol@carol.example.com \
+        --fingerprint SHA256:... --dir /var/lib/bouncer/alice
+
+Revocation applies to new handshakes only; established connections stay
+up until they are closed or the node restarts. To drop a live
+connection, call `net_kernel:disconnect/1` on the node itself.
+
+### Notes
+
+- `bouncer_guests` never talks to a running node and never moves
+  private keys: `id_x25519` stays on its machine, and `bouncer_keys`
+  re-reads the authorized directories on every handshake, so changes
+  apply to the next connection without a restart.
+- Authorized directories and `.pub` files must not be writable by
+  group or others; symlinks are refused.
+
 ## Build and boot-time code path
 
     rebar3 compile
@@ -75,6 +223,95 @@ Transport policy options include `chunk_size`, `padding`, `compression`,
 `max_bytes_without_rekey`. Carrier options are `handshake_timeout_ms` (5000),
 `suite` (`aesgcm_sha512`), `accept_suites` (`aesgcm_sha512`),
 `max_pending` (64), and `send_timeout_ms` (30000).
+
+## Managing guests with bouncer_guests
+
+`bouncer_guests` manages a node's key directory and its authorized directories
+("guests" are the peers allowed to connect). It is a thin layer over
+`bouncer_keys`. It only edits files in the key and authorized directories and
+does not talk to a running node: no processes, no network, no distribution.
+Secret key material is never printed.
+
+Build (result: `_build/default/bin/bouncer_guests`):
+
+    rebar3 escriptize
+
+Usage: `bouncer_guests <command> [options]`. Global options:
+
+    --dir DIR             node key directory (default: $BOUNCER_DIR, then the user config dir/NodeName)
+    --authorized-dir DIR  authorized directory, repeatable; `add` writes to the first one
+    --node NAME           this node's name (needed for the default directories)
+    -q, --quiet           only print errors and the primary result value
+    -h, --help
+
+Without `--node`, `--dir` or `--authorized-dir` (or the matching `BOUNCER_*`
+variables) must be given. Exit codes: 0 ok, 1 not found, 2 usage error
+(including an invalid name, key or comment), 3 error (I/O, permissions, invalid
+key file or refused directory), 4 fingerprint mismatch. Errors go to stderr.
+
+**init** creates the key directory (0700) and authorized directory (0755), and
+generates the identity key unless `--no-generate`. Idempotent; never loosens
+existing permissions. Prints the authorized line and the fingerprint (with `-q`
+only the line):
+
+    $ bouncer_guests init --node a@host
+    a@host VL6m3WhoKZLs0j95m230Xi/BBTHuBcr5/p93erEUuSI=
+    # fingerprint SHA256:T9bHjMsbNZSPpp28o8nVzNhn4+E4W7yDoNB0aEs+c+E
+
+**add** authorizes a peer. The fingerprint is always printed (with `-q` only
+the fingerprint). With `--fingerprint FP` (with or without `SHA256:`) nothing is
+written unless it matches (exit 4). Forms: `add NAME KEY [--comment TEXT]`,
+`add --line "NAME KEY [comment]"`, and `add -` (one line from stdin; empty lines
+and lines starting with `#` are ignored, so the output of `init` and
+`show --self` can be piped in). Idempotent:
+
+    $ bouncer_guests add b@host 6kDBh5adCE7obYJC2vl2JgJHnZ/1sSv4oIiOwq/m1Ss= --fingerprint SHA256:QKBOFWektI8E8mxkbWlXXhmDEim5fUXRFLQZ+iF7Kv8
+    added
+    name: b@host
+    fingerprint: SHA256:QKBOFWektI8E8mxkbWlXXhmDEim5fUXRFLQZ+iF7Kv8
+    file: /home/me/.config/bouncer/a@host/authorized.d/b@host.40a04e1567a4.pub
+
+**remove** `NAME [--fingerprint FP | --all]` revokes a peer. With several keys
+(rotation) and neither option it refuses (exit 2) and lists the fingerprints;
+unknown name or fingerprint gives exit 1. Revocation applies to NEW handshakes;
+established connections stay up until they are closed or the node restarts.
+
+    $ bouncer_guests remove b@host
+    removed b@host  SHA256:QKBOFWektI8E8mxkbWlXXhmDEim5fUXRFLQZ+iF7Kv8  /home/me/.config/bouncer/a@host/authorized.d/b@host.40a04e1567a4.pub
+
+**show** `NAME` prints name, fingerprint, key, comment, file and directory of
+each entry; `show --self --node NAME` prints this node's own line and
+fingerprint and never creates a key (exit 1, run `init`, when there is none).
+
+    $ bouncer_guests show b@host
+    name: b@host
+    fingerprint: SHA256:QKBOFWektI8E8mxkbWlXXhmDEim5fUXRFLQZ+iF7Kv8
+    key: 6kDBh5adCE7obYJC2vl2JgJHnZ/1sSv4oIiOwq/m1Ss=
+    comment: 
+    file: /home/me/.config/bouncer/a@host/authorized.d/b@host.40a04e1567a4.pub
+    directory: /home/me/.config/bouncer/a@host/authorized.d
+
+**list** prints all entries sorted by name and fingerprint. Skipped files
+(symlink, too large, malformed, loose permissions) are reported on stderr and
+do not change the exit code; a refused directory (e.g. writable by group/other)
+is exit 3.
+
+    $ bouncer_guests list
+    b@host  SHA256:QKBOFWektI8E8mxkbWlXXhmDEim5fUXRFLQZ+iF7Kv8  /home/me/.config/bouncer/a@host/authorized.d/b@host.40a04e1567a4.pub
+
+**check** `NAME FINGERPRINT` verifies out of band: `ok` and exit 0 on a match,
+exit 4 (printing the actual fingerprints) on a mismatch, exit 1 when the name
+is unknown. Comparison is case-sensitive; the `SHA256:` prefix is optional.
+
+Usual workflow:
+
+1. Run `bouncer_guests init --node NAME` on both nodes.
+2. Exchange the printed lines over a trusted channel and compare the
+   fingerprints out of band.
+3. On each node: `bouncer_guests add NAME KEY --fingerprint FP` (or pipe the
+   line: `... | bouncer_guests add -`).
+4. Later, `bouncer_guests check NAME FP` verifies what is authorized.
+5. `bouncer_guests remove NAME` revokes (new handshakes only).
 
 ## Distribution benchmark
 

@@ -33,6 +33,7 @@
 -include_lib("kernel/include/dist_util.hrl").
 
 -define(SETTINGS, {?MODULE, settings}).
+-define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
 
 listen(Name) ->
     {ok, Host} = inet:gethostname(),
@@ -400,29 +401,40 @@ writer_data(Socket, Sender, Controller, OwnName) ->
 
 write_packet(Socket, Sender, Packet) ->
     try bouncer_protocol:tx_packet(Packet) of
-        Pending ->
-            write_packet_frames(Socket, Sender, Pending)
+        Pending -> write_packet_frames(Socket, Sender, Pending, [], 0)
     catch
         error:Reason -> {error, Reason}
     end.
 
-write_packet_frames(Socket, Sender, Pending) ->
+write_packet_frames(Socket, Sender, Pending, Acc, Size) ->
     case bouncer_protocol:tx_next(Sender, Pending) of
         {Frame, Sender1, more, Pending1} ->
-            case gen_tcp:send(Socket, Frame) of
-                ok ->
-                    write_packet_frames(Socket, Sender1, Pending1);
-                {error, Reason} ->
-                    {error, Reason}
+            Acc1 = [Frame | Acc],
+            Size1 = Size + erlang:iolist_size(Frame),
+            case Size1 >= ?SEND_BATCH_MAX of
+                true ->
+                    case send_frames(Socket, Acc1) of
+                        ok ->
+                            write_packet_frames(Socket, Sender1, Pending1, [], 0);
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                false ->
+                    write_packet_frames(Socket, Sender1, Pending1, Acc1, Size1)
             end;
         {Frame, Sender1, done} ->
-            case gen_tcp:send(Socket, Frame) of
+            case send_frames(Socket, [Frame | Acc]) of
                 ok ->
                     {ok, Sender1};
                 {error, Reason} ->
                     {error, Reason}
             end
     end.
+
+send_frames(Socket, [Frame]) ->
+    gen_tcp:send(Socket, Frame);
+send_frames(Socket, Frames) ->
+    gen_tcp:send(Socket, lists:reverse(Frames)).
 
 send_tick(Socket, Sender) ->
     {Frame, Sender1} = bouncer_protocol:tx_tick(Sender),

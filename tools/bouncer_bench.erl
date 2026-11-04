@@ -291,7 +291,9 @@ start_node(Carrier, Root, Suffix, Settings) ->
         end,
     Dist = case Carrier of inet_tcp -> "inet_tcp"; bouncer -> "bouncer" end,
     Args = ["+S", "2:2", "+SDio", "1", "+SDcpu", "1:1",
-            "-proto_dist", Dist, "-kernel", "net_ticktime", "8",
+            "-proto_dist", Dist,
+            "-kernel", "net_ticktime", "8",
+            "-kernel", "inet_backend", "socket"
             "logger_level", "emergency",
             "inet_dist_use_interface", "{127,0,0,1}",
             "+zdbbl", "1000000"] ++ BouncerArgs ++

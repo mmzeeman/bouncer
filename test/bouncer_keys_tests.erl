@@ -442,3 +442,103 @@ settings_test_() ->
                        bouncer_keys:node_key_dir(a@h, #{})),
           ?assertError(badarg, bouncer_keys:node_key_dir(<<"../a">>, #{}))
       end}].
+
+%%% list_peers/1, ensure_dirs/2, add_peer/3 comment
+
+list_peers_test_() ->
+    [{"lists entries with the same rules as check_peer; reports skipped files",
+      fun() -> with_dir(fun(B) ->
+          {Dir, O} = auth_opts(B),
+          K1 = new_pub(), K2 = new_pub(),
+          write_pub(Dir, "a.pub", <<"a@h ", (base64:encode(K1))/binary, " my  comment\n">>),
+          write_pub(Dir, "b.pub", bouncer_keys:authorized_line(<<"b@h">>, K2)),
+          write_pub(Dir, ".dot.pub", bouncer_keys:authorized_line(<<"c@h">>, K2)),
+          write_pub(Dir, "notpub.txt", bouncer_keys:authorized_line(<<"c@h">>, K2)),
+          write_pub(Dir, "bad.pub", <<"nonsense\n">>),
+          write_pub(Dir, "big.pub", binary:copy(<<"x">>, 5000)),
+          Loose = write_pub(Dir, "loose.pub", bouncer_keys:authorized_line(<<"d@h">>, K2)),
+          ok = file:change_mode(Loose, 8#666),
+          Real = write_pub(B, "real.pub", bouncer_keys:authorized_line(<<"e@h">>, K2)),
+          ok = file:make_symlink(Real, filename:join(Dir, "link.pub")),
+          {ok, Entries, Skips} = bouncer_keys:list_peers(O),
+          ?assertMatch([#{name := <<"a@h">>, key := K1, comment := <<"my comment">>, dir := Dir},
+                        #{name := <<"b@h">>, key := K2, comment := <<>>}],
+                       Entries),
+          [#{fingerprint := Fp, file := File}, _] = Entries,
+          ?assertEqual(binary_to_list(bouncer_keys:fingerprint(K1)), Fp),
+          ?assertEqual(filename:join(Dir, "a.pub"), File),
+          Reasons = maps:from_list([{filename:basename(F), R} || #{file := F, reason := R} <- Skips]),
+          ?assertEqual(#{"bad.pub" => {malformed, missing_fields}, "big.pub" => too_large,
+                         "loose.pub" => group_or_other_writable,
+                         "link.pub" => symlink_refused}, Reasons),
+          [?assertEqual(allowed, bouncer_keys:check_peer(N, K, O))
+           || {N, K} <- [{<<"a@h">>, K1}, {<<"b@h">>, K2}]],
+          [?assertEqual(unknown_name, bouncer_keys:check_peer(N, K2, O))
+           || N <- [<<"c@h">>, <<"d@h">>, <<"e@h">>]]
+      end) end},
+     {"missing directory is empty; refused directories are errors",
+      fun() -> with_dir(fun(B) ->
+          Missing = filename:join(B, "nope"),
+          ?assertEqual({ok, [], []}, bouncer_keys:list_peers(#{authorized_dirs => [Missing], node_name => <<"me@h">>})),
+          {Dir, O} = auth_opts(B),
+          ok = file:change_mode(Dir, 8#775),
+          ?assertMatch({error, {refused_dir, Dir, group_or_other_writable}}, bouncer_keys:list_peers(O)),
+          File = filename:join(B, "file"),
+          ok = file:write_file(File, ""),
+          ?assertMatch({error, {refused_dir, File, not_a_directory}},
+                       bouncer_keys:list_peers(#{authorized_dirs => [File], node_name => <<"me@h">>}))
+      end) end},
+     {"several directories are concatenated in order",
+      fun() -> with_dir(fun(B) ->
+          D1 = filename:join(B, "d1"), D2 = filename:join(B, "d2"),
+          mkdir(D1, 8#755), mkdir(D2, 8#755),
+          write_pub(D1, "x.pub", bouncer_keys:authorized_line(<<"x@h">>, new_pub())),
+          write_pub(D2, "y.pub", bouncer_keys:authorized_line(<<"y@h">>, new_pub())),
+          {ok, [#{name := <<"x@h">>}, #{name := <<"y@h">>}], []} =
+              bouncer_keys:list_peers(#{authorized_dirs => [D1, D2], node_name => <<"me@h">>})
+      end) end}].
+
+ensure_dirs_test_() ->
+    [{"creates key dir 0700 and authorized dir 0755, creates no key",
+      fun() -> with_dir(fun(B) ->
+          O = keyopts(B),
+          ?assertEqual(ok, bouncer_keys:ensure_dirs(<<"a@h">>, O)),
+          Key = maps:get(dir, O),
+          ?assertEqual(8#700, mode(Key)),
+          ?assertEqual(8#755, mode(filename:join(Key, "authorized.d"))),
+          ?assertEqual([], [N || N <- element(2, file:list_dir(Key)), N =/= "authorized.d"])
+      end) end},
+     {"existing directories are never loosened; invalid names rejected",
+      fun() -> with_dir(fun(B) ->
+          O = keyopts(B),
+          Key = maps:get(dir, O),
+          mkdir(Key, 8#750),
+          ?assertEqual(ok, bouncer_keys:ensure_dirs(<<"a@h">>, O)),
+          ?assertEqual(8#750, mode(Key)),
+          ?assertEqual({error, invalid_node_name}, bouncer_keys:ensure_dirs(<<"../a">>, O#{dir => "/nonexistent/x"})),
+          ?assertEqual({error, invalid_node_name}, bouncer_keys:ensure_dirs(<<>>, O))
+      end) end}].
+
+add_peer_comment_test_() ->
+    [{"comment is stored as `name key comment`; format stays loadable",
+      fun() -> with_dir(fun(B) ->
+          {Dir, O} = auth_opts(B),
+          K = new_pub(),
+          {ok, P} = bouncer_keys:add_peer(<<"a@h">>, K, O#{comment => "build server"}),
+          ?assertEqual({ok, <<"a@h ", (base64:encode(K))/binary, " build server\n">>}, file:read_file(P)),
+          ?assertEqual({ok, P}, bouncer_keys:add_peer(<<"a@h">>, K, O#{comment => <<"build server">>})),
+          ?assertEqual(allowed, bouncer_keys:check_peer(<<"a@h">>, K, O)),
+          ?assertMatch({ok, [#{comment := <<"build server">>, dir := Dir}], []}, bouncer_keys:list_peers(O))
+      end) end},
+     {"no comment: file unchanged; multi-line comments rejected",
+      fun() -> with_dir(fun(B) ->
+          {Dir, O} = auth_opts(B),
+          K = new_pub(),
+          {ok, P} = bouncer_keys:add_peer(<<"a@h">>, K, O),
+          ?assertEqual({ok, bouncer_keys:authorized_line(<<"a@h">>, K)}, file:read_file(P)),
+          {ok, P2} = bouncer_keys:add_peer(<<"b@h">>, K, O#{comment => <<>>}),
+          ?assertEqual({ok, bouncer_keys:authorized_line(<<"b@h">>, K)}, file:read_file(P2)),
+          ?assertEqual({error, invalid_comment}, bouncer_keys:add_peer(<<"c@h">>, K, O#{comment => "a\nb"})),
+          ?assertEqual({error, invalid_comment}, bouncer_keys:add_peer(<<"c@h">>, K, O#{comment => <<"a\rb">>})),
+          ?assertEqual(2, length(element(2, file:list_dir(Dir))))
+      end) end}].
