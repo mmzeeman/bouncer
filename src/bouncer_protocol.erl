@@ -544,9 +544,14 @@ Creates a receiver around the receive cipher state of a finished handshake.
 -spec new_receiver(enoise_cipher_state:state(), map()) -> receiver().
 new_receiver(CS, Policy) when is_map(Policy) ->
     ok = check_keyed(CS),
-    #{max_packet := MaxPacket, accept_compression := Accept,
+    #{max_packet := MaxPacket,
+      accept_compression := Accept,
       max_bytes_without_rekey := MaxBytes} = ok_policy(receiver_policy(Policy)),
-    #rx{cs = CS, max_packet = MaxPacket, accept_compression = Accept, max_bytes = MaxBytes}.
+
+    #rx{cs = CS,
+        max_packet = MaxPacket,
+        accept_compression = Accept,
+        max_bytes = MaxBytes}.
 
 ok_policy({ok, Policy}) -> Policy;
 ok_policy({error, Error}) -> erlang:error({badarg, Error}).
@@ -567,15 +572,12 @@ Initialization steps which must be done in the controlling process of the socket
 It must be called at the start of the writing process. This initializes the
 zstream in the controlling process.
 """.
-tx_start(#tx{ compression = Compression }=Tx) ->
-    Tx#tx{ zstream = init_zstream(Compression) }.
-
-init_zstream({zlib, _}) ->
+tx_start(#tx{ compression = {zlib, _}}=Tx) ->
     Z = zlib:open(),
     ok = zlib:deflateInit(Z, default, deflated, -15, 8, default),
-    Z;
-init_zstream(_) ->
-    undefined.
+    Tx#tx{ zstream = Z };
+tx_start(#tx{ compression = none }=Tx) ->
+    Tx.
 
 -doc """
 Starts sending one dist packet. Packets are never empty (an empty dist packet

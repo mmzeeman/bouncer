@@ -403,10 +403,12 @@ start_node(Root, Suffix, ExtraSettings) ->
                          {Key, Value} <-
                              [{"dir", Dir}, {"authorized_dirs", AuthDir},
                               {"generate", "false"} | ExtraSettings]]),
-    Args = ["+S", "2:2", "+SDio", "1", "+SDcpu", "1:1",
-            "-proto_dist", "bouncer", "-kernel", "net_ticktime", "8",
-            "inet_dist_use_interface", "{127,0,0,1}",
-            "+zdbbl", "1000000"] ++ BouncerArgs ++
+    Args = ["+S", "2:2",
+            "+SDio", "1",
+            "+SDcpu", "1:1",
+            "-proto_dist", "bouncer",
+            "-kernel", "net_ticktime", "8",
+            "inet_dist_use_interface", "{127,0,0,1}"] ++ BouncerArgs ++
         ["-pa" | Pa],
     {ok, Peer, Node} = peer:start_link(
                          #{name => Name, host => "127.0.0.1",
@@ -417,8 +419,11 @@ start_node(Root, Suffix, ExtraSettings) ->
 start_plain_node(Root) ->
     Name = list_to_atom("bouncer_plain_" ++
                         integer_to_list(erlang:unique_integer([positive]))),
-    Args = ["+S", "2:2", "+SDio", "1", "+SDcpu", "1:1",
-            "-proto_dist", "inet_tcp", "-kernel", "net_ticktime", "8",
+    Args = ["+S", "2:2",
+            "+SDio", "1",
+            "+SDcpu", "1:1",
+            "-proto_dist", "inet_tcp",
+            "-kernel", "net_ticktime", "8",
             "-pa" | code:get_path()],
     {ok, Peer, Node} = peer:start_link(
                          #{name => Name, host => "127.0.0.1",
