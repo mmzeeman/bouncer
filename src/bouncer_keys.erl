@@ -26,12 +26,14 @@ Secret key material is never logged and never part of an error term.
     check_peer/3,
     add_peer/3,
     remove_peer/3,
+    list_peers/1,
+    ensure_dirs/2,
     valid_node_name/1
 ]).
 
 -export([public/1, secret/1, generated/1]).
 
--export_type([opts/0, node_name/0, key_info/0]).
+-export_type([opts/0, node_name/0, key_info/0, peer_entry/0, skipped/0]).
 
 -define(KEY_FILE, "id_x25519").
 -define(AUTHORIZED_SUBDIR, "authorized.d").
@@ -44,7 +46,11 @@ Secret key material is never logged and never part of an error term.
                   generate => boolean(),
                   authorized_dirs => [file:filename()] | string(),
                   keygen => fun(() -> {binary(), binary()}),
-                  node_name => node_name()}.
+                  node_name => node_name(),
+                  comment => binary() | string()}.
+-type peer_entry() :: #{name := binary(), key := binary(), fingerprint := string(),
+                        comment := binary(), file := file:filename(), dir := file:filename()}.
+-type skipped() :: #{file := file:filename(), reason := term()}.
 %% The secret is only reachable through secret/1, so that printing or logging
 %% a key_info() cannot leak it.
 -opaque key_info() :: #{public := binary(),
@@ -262,8 +268,7 @@ publish_key(Name, Dir, Path, Secret) ->
     end.
 
 default_keygen() ->
-    KP = enoise_keypair:new(dh25519),
-    {enoise_keypair:pubkey(KP), enoise_keypair:seckey(KP)}.
+    crypto:generate_key(ecdh, x25519).
 
 %% The reason of a crashing keygen is deliberately dropped: it may contain key material.
 run_keygen(Keygen) ->
@@ -277,8 +282,7 @@ run_keygen(Keygen) ->
     end.
 
 key_info(Secret, Generated) ->
-    KP = enoise_keypair:new(dh25519, Secret, undefined),
-    Pub = enoise_keypair:pubkey(KP),
+    {Pub, _} = crypto:generate_key(ecdh, x25519, Secret),
     #{public => Pub,
       secret => fun() -> Secret end,
       fingerprint => fingerprint(Pub),
@@ -429,7 +433,7 @@ check_peer(Name, PublicKey, Opts) ->
             unknown_name;
         true ->
             Entries = load_all(dirs_for(Opts)),
-            case [K || {_Path, N, K} <- Entries, N =:= Name] of
+            case [K || #{name := N, key := K} <- Entries, N =:= Name] of
                 [] ->
                     unknown_name;
                 Keys ->
@@ -448,7 +452,8 @@ matches(_, _) ->
 
 -doc """
 Authorizes a peer by writing `<name>.<hex>.pub` into the first authorized
-directory. Idempotent for the same key.
+directory. Idempotent for the same key. An optional single-line `comment` in
+`Opts` is appended to the line (`name key comment`).
 """.
 -spec add_peer(binary(), binary(), opts()) -> {ok, file:filename()} | {error, term()}.
 add_peer(Name, PublicKey, Opts) ->
@@ -458,20 +463,46 @@ add_peer(Name, PublicKey, Opts) ->
         {_, false} ->
             {error, invalid_key};
         {true, true} ->
-            case dirs_for(Opts) of
-                [] ->
-                    {error, no_authorized_dir};
-                [Dir | _] ->
-                    add_peer_in(Dir, Name, PublicKey)
+            case comment_line(Opts) of
+                {ok, Comment} ->
+                    case dirs_for(Opts) of
+                        [] ->
+                            {error, no_authorized_dir};
+                        [Dir | _] ->
+                            add_peer_in(Dir, Name, PublicKey, Comment)
+                    end;
+                error ->
+                    {error, invalid_comment}
             end
     end.
 
-add_peer_in(Dir, Name, Pub) ->
+%% The optional `comment` must be a single line.
+comment_line(Opts) ->
+    case maps:find(comment, Opts) of
+        error ->
+            {ok, <<>>};
+        {ok, C} ->
+            case name_to_binary(C) of
+                {ok, Bin} ->
+                    case binary:match(Bin, [<<"\n">>, <<"\r">>, <<0>>]) of
+                        nomatch -> {ok, string:trim(Bin)};
+                        _ -> error
+                    end;
+                error ->
+                    error
+            end
+    end.
+
+add_peer_in(Dir, Name, Pub, Comment) ->
     case mkdir_p(Dir, 8#755) of
         ok ->
             Prefix = binary:encode_hex(binary:part(crypto:hash(sha256, Pub), 0, 6), lowercase),
             Final = filename:join(Dir, binary_to_list(<<Name/binary, ".", Prefix/binary, ".pub">>)),
-            Line = authorized_line(Name, Pub),
+            Line = case Comment of
+                       <<>> -> authorized_line(Name, Pub);
+                       _ -> <<(string:trim(authorized_line(Name, Pub), trailing))/binary, " ",
+                              Comment/binary, "\n">>
+                   end,
             case publish(Dir, Final, 8#644, Line) of
                 ok ->
                     {ok, Final};
@@ -492,7 +523,7 @@ add_peer_in(Dir, Name, Pub) ->
 -spec remove_peer(binary(), string() | binary(), opts()) -> ok | {error, term()}.
 remove_peer(Name, Fingerprint, Opts) ->
     Fp = unicode:characters_to_binary(Fingerprint),
-    Matching = [P || {P, N, K} <- load_all(dirs_for(Opts)),
+    Matching = [P || #{file := P, name := N, key := K} <- load_all(dirs_for(Opts)),
                      N =:= Name, fingerprint(K) =:= Fp],
     Results = [file:delete(P) || P <- Matching],
     case {Matching, [R || {error, _} = R <- Results]} of
@@ -501,103 +532,152 @@ remove_peer(Name, Fingerprint, Opts) ->
         {_, [Error | _]} -> Error
     end.
 
+-doc """
+Lists the entries of all authorized directories, with the same loader rules as
+`check_peer/3`. Returns the entries and the files that were skipped (with the
+reason). A directory that is refused (not a directory, writable by
+group/other, unreadable) is an error; a missing directory is empty.
+""".
+-spec list_peers(opts()) -> {ok, [peer_entry()], [skipped()]} | {error, term()}.
+list_peers(Opts) ->
+    list_peers_1(dirs_for(Opts), [], []).
+
+list_peers_1([], Entries, Skips) ->
+    {ok, lists:append(lists:reverse(Entries)), lists:append(lists:reverse(Skips))};
+list_peers_1([Dir | Rest], Entries, Skips) ->
+    case load_dir(Dir) of
+        {ok, E, S} -> list_peers_1(Rest, [E | Entries], [S | Skips]);
+        {error, _} = Error -> Error
+    end.
+
+-doc """
+Creates the key directory (mode 0700) and the authorized directories (mode
+0755) of `NodeName`. Existing directories are left as they are; modes are
+never loosened.
+""".
+-spec ensure_dirs(node_name(), opts()) -> ok | {error, term()}.
+ensure_dirs(NodeName, Opts) ->
+    case name_to_binary(NodeName) of
+        {ok, Bin} ->
+            case valid_node_name(Bin) of
+                true ->
+                    KeyDir = node_key_dir(Bin, Opts),
+                    ensure_dirs_1([{KeyDir, 8#700} | [{D, 8#755} || D <- authorized_dirs(Bin, Opts)]]);
+                false ->
+                    {error, invalid_node_name}
+            end;
+        error ->
+            {error, invalid_node_name}
+    end.
+
+ensure_dirs_1([]) ->
+    ok;
+ensure_dirs_1([{Dir, Mode} | Rest]) ->
+    case mkdir_p(Dir, Mode) of
+        ok -> ensure_dirs_1(Rest);
+        {error, Reason} -> {error, {mkdir_failed, Reason, Dir}}
+    end.
+
 %%% ------------------------------------------------------------------
 %%% Loader
 %%% ------------------------------------------------------------------
 
 load_all(Dirs) ->
-    lists:append([load_dir(D) || D <- Dirs]).
+    lists:append([case load_dir(D) of
+                      {ok, Entries, _Skips} -> Entries;
+                      {error, _} -> []
+                  end || D <- Dirs]).
 
+%% The single loader behind check_peer/3, remove_peer/3 and list_peers/1.
 load_dir(Dir) ->
     case file:read_file_info(Dir) of
         {ok, #file_info{type = directory, mode = Mode}} ->
             case Mode band 8#022 =/= 0 of
                 true ->
-                    warn(Dir, "directory writable by group/other, refused"),
-                    [];
+                    refuse(Dir, group_or_other_writable, "directory writable by group/other, refused");
                 false ->
                     list_dir(Dir)
             end;
         {ok, _} ->
-            warn(Dir, "not a directory"),
-            [];
+            refuse(Dir, not_a_directory, "not a directory");
         {error, enoent} ->
-            [];
+            {ok, [], []};
         {error, Reason} ->
-            warn(Dir, io_lib:format("cannot read directory: ~p", [Reason])),
-            []
+            refuse(Dir, {cannot_read, Reason}, io_lib:format("cannot read directory: ~p", [Reason]))
     end.
+
+refuse(Dir, Why, Msg) ->
+    warn(Dir, Msg),
+    {error, {refused_dir, Dir, Why}}.
 
 list_dir(Dir) ->
     case file:list_dir(Dir) of
         {ok, Names} ->
-            lists:append([load_file(Dir, N) || N <- lists:sort(Names)]);
+            Items = lists:append([load_file(Dir, N) || N <- lists:sort(Names)]),
+            {ok, [E || {entry, E} <- Items], [S || {skip, S} <- Items]};
         {error, Reason} ->
-            warn(Dir, io_lib:format("cannot list directory: ~p", [Reason])),
-            []
+            refuse(Dir, {cannot_list, Reason}, io_lib:format("cannot list directory: ~p", [Reason]))
     end.
 
 load_file(_Dir, [$. | _]) ->
     [];
 load_file(Dir, Name) ->
     case filename:extension(Name) of
-        ".pub" -> load_pub(filename:join(Dir, Name));
+        ".pub" -> load_pub(Dir, filename:join(Dir, Name));
         _ -> []
     end.
 
-load_pub(Path) ->
+load_pub(Dir, Path) ->
     case file:read_link_info(Path) of
         {ok, #file_info{type = symlink}} ->
-            warn(Path, "symlink refused"),
-            [];
+            [skip(Path, symlink_refused, "symlink refused")];
         {ok, #file_info{type = regular, size = Size, mode = Mode}} ->
             if
                 Size > ?MAX_PUB_FILE ->
-                    warn(Path, "file too large, skipped"),
-                    [];
+                    [skip(Path, too_large, "file too large, skipped")];
                 Mode band 8#022 =/= 0 ->
-                    warn(Path, "file writable by group/other, refused"),
-                    [];
+                    [skip(Path, group_or_other_writable, "file writable by group/other, refused")];
                 true ->
-                    read_pub(Path)
+                    read_pub(Dir, Path)
             end;
         {ok, _} ->
             [];
         {error, Reason} ->
-            warn(Path, io_lib:format("cannot stat: ~p", [Reason])),
-            []
+            [skip(Path, {cannot_stat, Reason}, io_lib:format("cannot stat: ~p", [Reason]))]
     end.
 
-read_pub(Path) ->
+read_pub(Dir, Path) ->
     case file:read_file(Path) of
         {ok, Bin} when byte_size(Bin) =< ?MAX_PUB_FILE ->
             case parse_entry(Bin) of
-                {ok, Name, Key} ->
-                    [{Path, Name, Key}];
+                {ok, Name, Key, Comment} ->
+                    [{entry, #{name => Name, key => Key, fingerprint => binary_to_list(fingerprint(Key)),
+                               comment => Comment, file => Path, dir => Dir}}];
                 {error, Why} ->
-                    warn(Path, io_lib:format("malformed entry: ~p", [Why])),
-                    []
+                    [skip(Path, {malformed, Why}, io_lib:format("malformed entry: ~p", [Why]))]
             end;
         {ok, _} ->
-            warn(Path, "file too large, skipped"),
-            [];
+            [skip(Path, too_large, "file too large, skipped")];
         {error, Reason} ->
-            warn(Path, io_lib:format("cannot read: ~p", [Reason])),
-            []
+            [skip(Path, {cannot_read, Reason}, io_lib:format("cannot read: ~p", [Reason]))]
     end.
+
+skip(Path, Reason, Msg) ->
+    warn(Path, Msg),
+    {skip, #{file => Path, reason => Reason}}.
 
 parse_entry(Bin) ->
     Lines = [L || L <- binary:split(Bin, <<"\n">>, [global]), not blank(L)],
     case Lines of
         [Line] ->
             case binary:split(Line, [<<" ">>, <<"\t">>, <<"\r">>], [global, trim_all]) of
-                [Name, B64 | _Comment] ->
+                [Name, B64 | Comment] ->
                     case valid_node_name(Name) of
                         false ->
                             {error, invalid_name};
                         true ->
                             case decode_key(B64) of
-                                {ok, Key} -> {ok, Name, Key};
+                                {ok, Key} -> {ok, Name, Key, iolist_to_binary(lists:join(<<" ">>, Comment))};
                                 error -> {error, invalid_key}
                             end
                     end;
