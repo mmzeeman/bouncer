@@ -3,6 +3,38 @@
 Erlang distribution over a Noise protocol transport, built on
 [enoise](https://github.com/mmzeeman/enoise) (bugfix branch).
 
+## Introduction
+
+Bouncer secures Erlang/OTP distribution. Out of the box, Erlang nodes exchange
+all distribution traffic — messages, process signals, RPCs, Mnesia
+replication — over an unencrypted TCP connection. Bouncer replaces the
+standard `inet_tcp` carrier with the [Noise protocol
+framework](https://noiseprotocol.org/), giving the node-to-node channels of
+an Erlang cluster end-to-end encryption and mutual authentication.
+
+Each node owns a long-term key pair, generated and managed by `bouncer_keys`.
+A connection between two nodes starts with a three-flight Noise `XX`
+handshake, which exchanges and authenticates both identities: a node only
+accepts peers whose public keys appear in its authorized directory, and
+private keys never leave their node. The handshake header and the target
+node name are bound into the Noise prologue, so any tampering with either
+fails authentication. After the handshake, every distribution packet is
+framed and AEAD-encrypted by `bouncer_protocol`, with optional compression
+and padding and automatic rekeying.
+
+Highlights:
+
+- Drop-in carrier: enabled with `-proto_dist bouncer`; ordinary distribution
+  features (RPC, `global`, Mnesia, monitors) work unchanged on top of it.
+  Epmd is still used for name registration unless you replace it.
+- Mutual public-key authentication without certificates or shared secrets.
+- Tunable transport policy: chunk size, padding, compression, rekey
+  intervals, and packet limits are all per-node settings.
+- Automatic rekeying of the send key after a configured number of frames,
+  bytes, or milliseconds.
+- A benchmark harness, `tools/bouncer_bench`, that measures bouncer against
+  plain `inet_tcp` for latency, throughput, and concurrent mailbox traffic.
+
 ## Build and boot-time code path
 
     rebar3 compile
