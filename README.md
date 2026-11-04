@@ -1,7 +1,7 @@
-# bouncer (WIP)
+# Bouncer Dist (WIP)
 
-Erlang distribution over a Noise transport, built on
-[enoise](https://github.com/aeternity/enoise) (master branch).
+Erlang distribution over a Noise protocol transport, built on
+[enoise](https://github.com/mmzeeman/enoise) (bugfix branch).
 
 ## Build and boot-time code path
 
@@ -13,7 +13,7 @@ all dependencies available on the boot code path with `-pa` or `ERL_LIBS`.
 For example, from the project directory:
 
     erl -pa _build/default/lib/*/ebin -proto_dist bouncer \
-        -name a@127.0.0.1 -kernel net_ticktime 8 +zdbbl 1000000 \
+        -name a@127.0.0.1 \
         -bouncer dir /var/lib/bouncer/a \
         -bouncer authorized_dirs /var/lib/bouncer/a/authorized.d
 
@@ -31,7 +31,6 @@ With a release, put these options in `vm.args`:
     -proto_dist bouncer
     -bouncer dir /var/lib/bouncer/a
     -bouncer authorized_dirs /var/lib/bouncer/a/authorized.d
-    +zdbbl 1000000
 
 ## Carrier settings
 
@@ -43,9 +42,7 @@ Transport policy options include `chunk_size`, `padding`, `compression`,
 `rekey_after`, `max_packet`, `accept_compression`, and
 `max_bytes_without_rekey`. Carrier options are `handshake_timeout_ms` (5000),
 `suite` (`aesgcm_sha512`), `accept_suites` (`aesgcm_sha512`),
-`max_pending` (64), and `send_timeout_ms` (30000). `+zdbbl` configures the
-emulator distribution buffer limit; the carrier relies on it and TCP send
-timeouts for backpressure.
+`max_pending` (64), and `send_timeout_ms` (30000).
 
 ## Distribution benchmark
 
@@ -207,14 +204,19 @@ needs the sender's packet boundaries: `last` marks them, and every
 ### API
 
 ```erlang
+%% sender
 S0 = bouncer_protocol:new_sender(TxCipherState, SenderPolicy),
-R0 = bouncer_protocol:new_receiver(RxCipherState, ReceiverPolicy),
+S1 = bouncer_protocol:tx_start(S0),
 P0 = bouncer_protocol:tx_packet(IoData),
-{Frame, S1, more, P1} = bouncer_protocol:tx_next(S0, P0),   %% one frame per call
-{Frame, S2, done}     = bouncer_protocol:tx_next(S1, P1),
-{Frame, S3}           = bouncer_protocol:tx_tick(S2),
-{ok, Events, R1}      = bouncer_protocol:rx_feed(R0, Bytes),  %% {packet, Iodata} | tick
-{error, Reason, Dead} = bouncer_protocol:rx_feed(R1, Bytes).  %% close the connection
+{Frame, S2, more, P1} = bouncer_protocol:tx_next(S1, P0),   %% one frame per call
+{Frame, S3, done}     = bouncer_protocol:tx_next(S2, P1),
+{Frame, S4}           = bouncer_protocol:tx_tick(S3),
+
+%% receiver
+R0 = bouncer_protocol:new_receiver(RxCipherState, ReceiverPolicy),
+R1 = bouncer_protocol:rx_start(R0),
+{ok, Events, R2}      = bouncer_protocol:rx_feed(R1, Bytes),  %% {packet, Iodata} | tick
+{error, Reason, Dead} = bouncer_protocol:rx_feed(R2, Bytes).  %% close the connection
 ```
 
 Errors: `decrypt_failed`, `bad_length`, `reserved_flags`, `tick_with_payload`,
