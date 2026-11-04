@@ -95,7 +95,7 @@ straight over ssh:
     ssh bob.example.com \
         bouncer_guests show --self --node bob@bob.example.com \
             --dir /var/lib/bouncer/bob \
- | bouncer_guests add - --dir /var/lib/bouncer/alice
+    | bouncer_guests add - --dir /var/lib/bouncer/alice
 
 Lines starting with `#` are ignored, so the tool's output can be piped
 as is. On alice, repeat for carol and dave, then on every other machine
