@@ -11,7 +11,6 @@
     reply_reject/1,
     msg3_frame/1,
     prologue/2,
-    name_payload/1,
     encode_name/1,
     decode_name/1,
     noise_name/1,
@@ -158,16 +157,11 @@ prologue(<<_:?HELLO_HEADER_SIZE/binary>> = HelloHeader, Target)
        byte_size(Target) >= ?MIN_NAME_LENGTH, byte_size(Target) =< ?MAX_NAME_LENGTH ->
     <<"bouncer/1", 0, HelloHeader/binary, (byte_size(Target)):16, Target/binary>>.
 
--spec name_payload(binary()) -> binary().
-name_payload(Name) when is_binary(Name),
+-spec encode_name(binary()) -> binary().
+encode_name(Name)  when is_binary(Name),
                         byte_size(Name) >= ?MIN_NAME_LENGTH,
                         byte_size(Name) =< ?MAX_NAME_LENGTH ->
     <<(byte_size(Name)):16, Name/binary>>.
-
--doc "Alias for `name_payload/1`, used when encoding a handshake identity.".
--spec encode_name(binary()) -> binary().
-encode_name(Name) ->
-    name_payload(Name).
 
 -doc """
 Decodes a length-prefixed node name. Rejects malformed/trailing data and

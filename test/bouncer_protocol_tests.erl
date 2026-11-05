@@ -92,7 +92,7 @@ wire_frames_test() ->
     ?assertEqual(<<"BNCR", 1, 2, 0, 0>>, bouncer_protocol:reply_reject(2)),
     Msg3 = <<4, 5>>,
     ?assertEqual(<<0, 2, Msg3/binary>>, bouncer_protocol:msg3_frame(Msg3)),
-    ?assertEqual(<<0, 8, "bob@host">>, bouncer_protocol:name_payload(<<"bob@host">>)).
+    ?assertEqual(<<0, 8, "bob@host">>, bouncer_protocol:encode_name(<<"bob@host">>)).
 
 reply_header_test() ->
     Limits = bouncer_protocol:limits(),
@@ -126,9 +126,9 @@ msg3_prefix_test() ->
                  bouncer_protocol:parse_msg3_prefix(<<(Max + 1):16>>)),
     ?assertEqual({error, bad_msg3_length}, bouncer_protocol:parse_msg3_prefix(<<1>>)).
 
-name_payload_test() ->
+encode_name_test() ->
     Name = <<"node@host">>,
-    Payload = bouncer_protocol:name_payload(Name),
+    Payload = bouncer_protocol:encode_name(Name),
     ?assertEqual(Payload, bouncer_protocol:encode_name(Name)),
     ?assertEqual({ok, Name}, bouncer_protocol:decode_name(Payload)),
     ?assertEqual({error, bad_payload},
@@ -166,7 +166,7 @@ enoise_flight_lengths(Suite, Name) ->
     ProtocolName = bouncer_protocol:noise_name(Suite),
     Init = noise_state(ProtocolName, Prologue, initiator),
     Resp = noise_state(ProtocolName, Prologue, responder),
-    NamePayload = bouncer_protocol:name_payload(Name),
+    NamePayload = bouncer_protocol:encode_name(Name),
     {ok, send, Msg1, Init1} = enoise:step_handshake(Init, {send, <<>>}),
     {ok, rcvd, <<>>, Resp1} = enoise:step_handshake(Resp, {rcvd, Msg1}),
     {ok, send, Msg2, Resp2} = enoise:step_handshake(Resp1, {send, NamePayload}),

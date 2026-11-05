@@ -416,7 +416,7 @@ start_malicious_responder(Target, MessageName, Keys) ->
                             enoise:step_handshake(State0, {rcvd, Msg1}),
                         {ok, send, Msg2, _State2} =
                             enoise:step_handshake(
-                              State1, {send, bouncer_protocol:name_payload(MessageName)}),
+                              State1, {send, bouncer_protocol:encode_name(MessageName)}),
                         ok = gen_tcp:send(Socket, bouncer_protocol:reply_ok(Msg2)),
                         Result = gen_tcp:recv(Socket, 2, 1000),
                         Parent ! {malicious_result, self(), Result}

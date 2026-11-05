@@ -161,7 +161,7 @@ check_responder(Socket, TargetName, OwnName, Suite, State2, Payload, Opts) ->
 
 send_msg3(Socket, OwnName, Suite, RemoteName, RemoteKey, State2) ->
     case enoise:step_handshake(State2,
-                               {send, bouncer_protocol:name_payload(OwnName)}) of
+                               {send, bouncer_protocol:encode_name(OwnName)}) of
         {ok, send, Msg3, State3} ->
             case gen_tcp:send(Socket, bouncer_protocol:msg3_frame(Msg3)) of
                 ok ->
@@ -237,7 +237,7 @@ respond_msg1(Socket, HelloHeader, OwnName, Suite, Keys, Opts, Deadline) ->
 
 send_msg2(Socket, OwnName, Suite, State1, Opts, Deadline) ->
     case enoise:step_handshake(State1,
-                               {send, bouncer_protocol:name_payload(OwnName)}) of
+                               {send, bouncer_protocol:encode_name(OwnName)}) of
         {ok, send, Msg2, State2} ->
             case gen_tcp:send(Socket, bouncer_protocol:reply_ok(Msg2)) of
                 ok ->
