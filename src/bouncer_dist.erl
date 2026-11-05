@@ -20,10 +20,6 @@
     start_reader/4,
     receive_data/4,
 
-    start_writer/4,
-    writer/4,
-    writer_data/4,
-
     controller_init/6,
     tick/1,
     getstat/1
@@ -33,6 +29,7 @@
 -include_lib("kernel/include/dist_util.hrl").
 
 -define(SETTINGS, {?MODULE, settings}).
+-define(DRAIN_MAX_PACKETS, 64).
 -define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
 
 listen(Name) ->
@@ -140,7 +137,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
 
 start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings, Result, Role) ->
     case initialize_controller(Socket, Result, Settings, Role) of
-        {ok, Controller, Reader, Writer} ->
+        {ok, Controller, Reader} ->
             HSData0 = #hs_data{
                          kernel_pid = Kernel,
                          other_node = OtherNode,
@@ -149,7 +146,7 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings
                          timer = Timer,
                          this_flags = 0,
                          allowed = Allowed,
-                         f_send = send_fun(Controller, Writer),
+                         f_send = send_fun(Controller),
                          f_recv = recv_fun(Controller, Reader, Result, Role),
                          f_setopts_pre_nodeup = fun(_Ctrl) -> ok end,
                          f_setopts_post_nodeup = fun(_Ctrl) -> ok end,
@@ -160,7 +157,7 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings
                          mf_setopts = setopts_fun(Socket),
                          mf_getopts = fun(_Ctrl, Opts) -> inet:getopts(Socket, Opts) end,
                          f_handshake_complete = fun(Ctrl, _Node, DHandle) ->
-                                     handshake_complete(Ctrl, Reader, Writer, DHandle)
+                                     handshake_complete(Ctrl, Reader, DHandle)
                              end},
             case Role of
                 responder ->
@@ -188,10 +185,10 @@ initialize_controller(Socket, Result, Settings, Role) ->
                                 [self(), Ref, Socket, Receiver, Sender,
                                  {Role, maps:get(node_name, Settings)}]),
         receive
-            {Ref, {ok, Controller, Reader, Writer}} ->
+            {Ref, {ok, Controller, Reader}} ->
                 case gen_tcp:controlling_process(Socket, Reader) of
                     ok ->
-                        {ok, Controller, Reader, Writer};
+                        {ok, Controller, Reader};
                     {error, Reason} ->
                         exit(Controller, kill),
                         {error, {controlling_process, Reason}}
@@ -207,68 +204,85 @@ initialize_controller(Socket, Result, Settings, Role) ->
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
     Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
-    Writer = spawn_link(?MODULE, start_writer, [Socket, Sender, self(), OwnName]),
-    Parent ! {Ref, {ok, self(), Reader, Writer}},
-    controller_loop(Socket, Writer, undefined).
+    Sender1 = bouncer_protocol:tx_start(Sender),
+    Parent ! {Ref, {ok, self(), Reader}},
+    controller_loop(Socket, OwnName, Reader, Sender1, undefined).
 
-controller_loop(Socket, Writer, undefined) ->
+controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
     receive
+        {send_packet, From, Ref, Packet} ->
+            case write_packet(Socket, Sender, Packet) of
+                {ok, Sender1} ->
+                    From ! {Ref, ok},
+                    controller_loop(Socket, OwnName, Reader, Sender1, undefined);
+                {error, Reason} ->
+                    From ! {Ref, {error, Reason}},
+                    log_io_error(OwnName, {send, Reason}),
+                    gen_tcp:close(Socket),
+                    exit({send_error, Reason})
+            end;
+        tick ->
+            case send_tick(Socket, Sender) of
+                {ok, Sender1} ->
+                    controller_loop(Socket, OwnName, Reader, Sender1, undefined);
+                {error, Reason} ->
+                    log_io_error(OwnName, {tick, Reason}),
+                    gen_tcp:close(Socket),
+                    exit({send_error, Reason})
+            end;
         {getstat, From, Ref} ->
             From ! {Ref, inet_tcp_dist:getstat(Socket)},
-            controller_loop(Socket, Writer, undefined);
+            controller_loop(Socket, OwnName, Reader, Sender, undefined);
         {handshake_complete, From, Ref, Reader, DHandle} ->
             ok = erlang:dist_ctrl_input_handler(DHandle, Reader),
             Reader ! {data_phase, DHandle},
-            Writer ! data_phase,
             process_flag(priority, normal),
             erlang:dist_ctrl_get_data_notification(DHandle),
             From ! {Ref, ok},
-            controller_loop(Socket, Writer, DHandle);
-        tick ->
-            Writer ! tick,
-            controller_loop(Socket, Writer, undefined);
+            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
         {'EXIT', _Pid, Reason} ->
             gen_tcp:close(Socket),
             exit({controller_child_exit, Reason})
     end;
-controller_loop(Socket, Writer, DHandle) ->
+controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
     receive
         {getstat, From, Ref} ->
             From ! {Ref, inet_tcp_dist:getstat(Socket)},
-            controller_loop(Socket, Writer, DHandle);
+            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
         dist_data ->
-            controller_drain(Socket, Writer, DHandle);
+            controller_drain(Socket, OwnName, Reader, Sender, DHandle, 0);
         tick ->
-            Writer ! tick,
-            controller_loop(Socket, Writer, DHandle);
+            case send_tick(Socket, Sender) of
+                {ok, Sender1} ->
+                    controller_loop(Socket, OwnName, Reader, Sender1, DHandle);
+                {error, Reason} ->
+                    log_io_error(OwnName, {tick, Reason}),
+                    gen_tcp:close(Socket),
+                    exit({send_error, Reason})
+            end;
         {'EXIT', _Pid, Reason} ->
             gen_tcp:close(Socket),
             exit({controller_child_exit, Reason})
     end.
 
-controller_drain(Socket, Writer, DHandle) ->
+controller_drain(Socket, OwnName, Reader, Sender, DHandle, Count) ->
     case erlang:dist_ctrl_get_data(DHandle) of
         none ->
             erlang:dist_ctrl_get_data_notification(DHandle),
-            controller_loop(Socket, Writer, DHandle);
+            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
         Packet ->
-            Writer ! {data_packet, self(), Packet},
-            controller_wait_packet(Socket, Writer, DHandle)
-    end.
-
-controller_wait_packet(Socket, Writer, DHandle) ->
-    receive
-        {packet_sent, Writer} ->
-            controller_drain(Socket, Writer, DHandle);
-        tick ->
-            Writer ! tick,
-            controller_wait_packet(Socket, Writer, DHandle);
-        {'EXIT', Writer, Reason} ->
-            gen_tcp:close(Socket),
-            exit({writer_exit, Reason});
-        {'EXIT', _Pid, Reason} ->
-            gen_tcp:close(Socket),
-            exit({controller_child_exit, Reason})
+            case write_packet(Socket, Sender, Packet) of
+                {ok, Sender1} when Count + 1 >= ?DRAIN_MAX_PACKETS ->
+                    self() ! dist_data,
+                    controller_loop(Socket, OwnName, Reader, Sender1, DHandle);
+                {ok, Sender1} ->
+                    controller_drain(Socket, OwnName, Reader, Sender1,
+                                     DHandle, Count + 1);
+                {error, Reason} ->
+                    log_io_error(OwnName, {send, Reason}),
+                    gen_tcp:close(Socket),
+                    exit({send_error, Reason})
+            end
     end.
 
 start_reader(Socket, Receiver0, Role, OwnName) ->
@@ -345,60 +359,6 @@ deliver_events([tick | Rest], DHandle) ->
     deliver_events(Rest, DHandle).
 
 
-%%
-%% Writer
-%%
-
-
-start_writer(Socket, Sender0, Controller, OwnName) ->
-    Sender = bouncer_protocol:tx_start(Sender0),
-    ?MODULE:writer(Socket, Sender, Controller, OwnName).
-
-writer(Socket, Sender, Controller, OwnName) ->
-    receive
-        {send_packet, From, Ref, Packet} ->
-            case write_packet(Socket, Sender, Packet) of
-                {ok, Sender1} ->
-                    From ! {Ref, ok},
-                    ?MODULE:writer(Socket, Sender1, Controller, OwnName);
-                {error, Reason} ->
-                    From ! {Ref, {error, Reason}},
-                    log_io_error(OwnName, {send, Reason}),
-                    exit({send_error, Reason})
-            end;
-        tick ->
-            case send_tick(Socket, Sender) of
-                {ok, Sender1} ->
-                    ?MODULE:writer(Socket, Sender1, Controller, OwnName);
-                {error, Reason} ->
-                    log_io_error(OwnName, {tick, Reason}),
-                    exit({send_error, Reason})
-            end;
-        data_phase ->
-            ?MODULE:writer_data(Socket, Sender, Controller, OwnName)
-    end.
-
-writer_data(Socket, Sender, Controller, OwnName) ->
-    receive
-        {data_packet, Controller, Packet} ->
-            case write_packet(Socket, Sender, Packet) of
-                {ok, Sender1} ->
-                    Controller ! {packet_sent, self()},
-                    ?MODULE:writer_data(Socket, Sender1, Controller, OwnName);
-                {error, Reason} ->
-                    log_io_error(OwnName, {send, Reason}),
-                    exit({send_error, Reason})
-            end;
-        tick ->
-            case send_tick(Socket, Sender) of
-                {ok, Sender1} ->
-                    ?MODULE:writer_data(Socket, Sender1, Controller, OwnName);
-                {error, Reason} ->
-                    log_io_error(OwnName, {tick, Reason}),
-                    exit({send_error, Reason})
-            end
-    end.
-
 write_packet(Socket, Sender, Packet) ->
     try bouncer_protocol:tx_packet(Packet) of
         Pending -> write_packet_frames(Socket, Sender, Pending, [], 0)
@@ -443,7 +403,7 @@ send_tick(Socket, Sender) ->
         {error, Reason} -> {error, Reason}
     end.
 
-handshake_complete(Controller, Reader, _Writer, DHandle) ->
+handshake_complete(Controller, Reader, DHandle) ->
     Ref = make_ref(),
     Controller ! {handshake_complete, self(), Ref, Reader, DHandle},
     receive
@@ -452,17 +412,17 @@ handshake_complete(Controller, Reader, _Writer, DHandle) ->
         {'EXIT', Controller, Reason} -> exit({controller_exit, Reason})
     end.
 
-send_fun(Controller, Writer) ->
+send_fun(Controller) ->
     fun(Ctrl, Packet) when Ctrl =:= Controller ->
             Ref = make_ref(),
-            Monitor = erlang:monitor(process, Writer),
-            Writer ! {send_packet, self(), Ref, Packet},
+            Monitor = erlang:monitor(process, Controller),
+            Controller ! {send_packet, self(), Ref, Packet},
             receive
                 {Ref, Result} ->
                     erlang:demonitor(Monitor, [flush]),
                     Result;
-                {'DOWN', Monitor, process, Writer, Reason} ->
-                    {error, {writer_exit, Reason}}
+                {'DOWN', Monitor, process, Controller, Reason} ->
+                    {error, {controller_exit, Reason}}
             end
     end.
 
