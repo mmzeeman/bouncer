@@ -20,6 +20,7 @@
           mailbox_sizes => [32, 128, 1024],
           warmup => 50,
           payload => compressible,
+          tls => true,
           output => "-"}).
 
 main() ->
@@ -55,13 +56,30 @@ run(Options) ->
         try
             Workloads = workloads(Options),
             io:format(standard_error, "Measuring inet_tcp reference...~n", []),
-            Baseline = run_with_pair(
-                         inet_tcp, Root, #{},
-                         fun(PeerA, PeerB, NodeB) ->
-                                 measure_workloads(PeerA, PeerB, NodeB, Workloads,
-                                                   Options, inet_tcp,
-                                                   #{}, Device, #{})
-                         end),
+            TcpBaseline = run_with_pair(
+                            inet_tcp, Root, #{},
+                            fun(PeerA, PeerB, NodeB) ->
+                                    measure_workloads(PeerA, PeerB, NodeB, Workloads,
+                                                      Options, inet_tcp,
+                                                      #{}, Device, #{})
+                            end),
+            TlsBaseline =
+                case maps:get(tls, Options) of
+                    true ->
+                        io:format(standard_error,
+                                  "Measuring inet_tls reference...~n", []),
+                        run_with_pair(
+                          inet_tls, Root, #{},
+                          fun(PeerA, PeerB, NodeB) ->
+                                  measure_workloads(PeerA, PeerB, NodeB, Workloads,
+                                                    Options, inet_tls,
+                                                    #{}, Device,
+                                                    #{tcp => TcpBaseline})
+                          end);
+                    false ->
+                        #{}
+                end,
+            Baseline = #{tcp => TcpBaseline, tls => TlsBaseline},
             Matrix = [{Suite, Compression, ChunkSize}
                       || Suite <- maps:get(suites, Options),
                          Compression <- maps:get(compressions, Options),
@@ -124,8 +142,7 @@ measure_workloads(PeerA, PeerB, NodeB, Workloads, Options, Carrier, Settings,
                                    Iterations, Warmup),
                         emit_row(Device, Carrier, Settings, Workload, Kind, Size,
                                  Iterations, Result,
-                                 maps:get(workload_key(Workload), Baseline,
-                                          undefined)),
+                                 workload_baselines(Workload, Baseline)),
                         {workload_key(Workload), Result}
                 end, Workloads),
     maps:from_list(Results).
@@ -161,27 +178,46 @@ measure_workload({_Kind, Size, Iterations}, PeerA, _PeerB, NodeB, Options,
               3600000).
 
 emit_row(Device, inet_tcp, _Settings, Workload, Kind, Size, Iterations,
-         Result, _Baseline) ->
-    write_row(Device, ["inet_tcp", "-", "-", "-", workload_name(Kind),
-                       atom_to_list(maps:get(payload_mode, Result, compressible)),
-                       Size, Iterations | workload_columns(Workload)] ++
-              [maps:get(latency_ms, Result),
-                       maps:get(mib_per_second, Result), "", "", "", ""]);
+         Result, _Baselines) ->
+    write_row(Device, row_prefix("inet_tcp", "-", "-", "-", Workload, Kind, Size,
+                                 Iterations, Result) ++
+              [maps:get(latency_ms, Result), maps:get(mib_per_second, Result),
+               "", "", "", "", "", "", "", ""]);
+emit_row(Device, inet_tls, _Settings, Workload, Kind, Size, Iterations,
+         Result, #{tcp := Tcp}) ->
+    write_row(Device, row_prefix("inet_tls", "-", "-", "-", Workload, Kind, Size,
+                                 Iterations, Result) ++
+              [maps:get(latency_ms, Result), maps:get(mib_per_second, Result)] ++
+              comparison(Result, Tcp) ++ ["", "", "", ""]);
 emit_row(Device, bouncer, Settings, Workload, Kind, Size, Iterations,
-         Result, Baseline) ->
-    BaseLatency = maps:get(latency_ms, Baseline),
-    BaseThroughput = maps:get(mib_per_second, Baseline),
-    write_row(Device, ["bouncer", maps:get(suite, Settings),
-                       maps:get(compression, Settings),
-                       maps:get(chunk_size, Settings), workload_name(Kind),
-                       atom_to_list(maps:get(payload_mode, Result, compressible)),
-                       Size, Iterations | workload_columns(Workload)] ++
-              [maps:get(latency_ms, Result),
-                       maps:get(mib_per_second, Result), BaseLatency,
-                       BaseThroughput,
-                       percent_change(maps:get(latency_ms, Result), BaseLatency),
-                       percent_change(maps:get(mib_per_second, Result),
-                                      BaseThroughput)]).
+         Result, #{tcp := Tcp, tls := Tls}) ->
+    write_row(Device, row_prefix("bouncer", maps:get(suite, Settings),
+                                 maps:get(compression, Settings),
+                                 maps:get(chunk_size, Settings), Workload, Kind,
+                                 Size, Iterations, Result) ++
+              [maps:get(latency_ms, Result), maps:get(mib_per_second, Result)] ++
+              comparison(Result, Tcp) ++ comparison(Result, Tls)).
+
+row_prefix(Carrier, Suite, Compression, ChunkSize, Workload, Kind, Size,
+           Iterations, Result) ->
+    [Carrier, Suite, Compression, ChunkSize, workload_name(Kind),
+     atom_to_list(maps:get(payload_mode, Result, compressible)),
+     Size, Iterations | workload_columns(Workload)].
+
+%% Reference latency, reference throughput and the two percentage changes.
+comparison(_Result, undefined) ->
+    ["", "", "", ""];
+comparison(Result, Reference) ->
+    RefLatency = maps:get(latency_ms, Reference),
+    RefThroughput = maps:get(mib_per_second, Reference),
+    [RefLatency, RefThroughput,
+     percent_change(maps:get(latency_ms, Result), RefLatency),
+     percent_change(maps:get(mib_per_second, Result), RefThroughput)].
+
+workload_baselines(Workload, Baselines) ->
+    Key = workload_key(Workload),
+    #{tcp => maps:get(Key, maps:get(tcp, Baselines, #{}), undefined),
+      tls => maps:get(Key, maps:get(tls, Baselines, #{}), undefined)}.
 
 workload_columns({mailbox, _Sizes, Workers, Messages}) ->
     [Workers, Messages];
@@ -202,7 +238,10 @@ write_header(Device) ->
                "messages_per_worker", "latency_ms",
                "payload_mib_per_second", "inet_latency_ms",
                "inet_payload_mib_per_second", "latency_change_pct",
-               "throughput_change_pct"]).
+               "throughput_change_pct", "inet_tls_latency_ms",
+               "inet_tls_payload_mib_per_second",
+               "inet_tls_latency_change_pct",
+               "inet_tls_throughput_change_pct"]).
 
 write_row(Device, Values) ->
     Csv = [csv_value(Value) || Value <- Values],
@@ -244,6 +283,7 @@ start_pair(Carrier, Root, Settings) ->
         try
             case Carrier of
                 inet_tcp -> ok;
+                inet_tls -> ok;
                 bouncer ->
                     {ok, _} = bouncer_keys:add_peer(
                                 NameA, bouncer_keys:public(KeysA),
@@ -274,6 +314,8 @@ start_node(Carrier, Root, Suffix, Settings) ->
         case Carrier of
             inet_tcp ->
                 {undefined, []};
+            inet_tls ->
+                {undefined, ["-ssl_dist_optfile", tls_optfile(Root)]};
             bouncer ->
                 {ok, KeyInfo} = bouncer_keys:load_or_generate(
                                   NodeName, #{dir => Dir, generate => true}),
@@ -289,7 +331,7 @@ start_node(Carrier, Root, Suffix, Settings) ->
                   "-bouncer", "chunk_size",
                   integer_to_list(maps:get(chunk_size, Settings))]}
         end,
-    Dist = case Carrier of inet_tcp -> "inet_tcp"; bouncer -> "bouncer" end,
+    Dist = atom_to_list(Carrier),
     Args = ["+S", "2:2", "+SDio", "1", "+SDcpu", "1:1",
             "-proto_dist", Dist,
             "-kernel", "net_ticktime", "8",
@@ -303,6 +345,24 @@ start_node(Carrier, Root, Suffix, Settings) ->
                            args => Args}) of
         {ok, Peer, Node} -> {Peer, NodeName, Node, AuthDir, Keys};
         {error, Reason} -> error({peer_start_failed, Name, Reason})
+    end.
+
+%% One throwaway certificate shared by both nodes; peers are not verified
+%% because only the cost of the TLS record layer is being measured.
+tls_optfile(Root) ->
+    Path = filename:join(Root, "ssl_dist.conf"),
+    case filelib:is_regular(Path) of
+        true ->
+            Path;
+        false ->
+            #{server_config := Config} =
+                public_key:pkix_test_data(#{server_chain => #{root => [], peer => []},
+                                            client_chain => #{root => [], peer => []}}),
+            Options = [{verify, verify_none} | Config],
+            Terms = [{server, Options ++ [{fail_if_no_peer_cert, false}]},
+                     {client, Options}],
+            ok = file:write_file(Path, io_lib:format("~tp.~n", [Terms])),
+            Path
     end.
 
 stop_pair(PeerA, PeerB) ->
@@ -498,6 +558,10 @@ parse_option("--payload", "compressible", Options) ->
     {ok, Options#{payload => compressible}};
 parse_option("--payload", "random", Options) ->
     {ok, Options#{payload => random}};
+parse_option("--tls", "true", Options) ->
+    {ok, Options#{tls => true}};
+parse_option("--tls", "false", Options) ->
+    {ok, Options#{tls => false}};
 parse_option("--output", Value, Options) ->
     {ok, Options#{output => Value}};
 parse_option(Key, _Value, _Options) ->
@@ -560,5 +624,6 @@ usage() ->
               "  --mailbox-sizes comma,list Tuple payload sizes (default: 32,128,1024)~n"
               "  --warmup N                Warmup calls per workload (default: 50)~n"
               "  --payload compressible|random (default: compressible)~n"
+              "  --tls true|false          Also measure inet_tls (default: true)~n"
               "  --output FILE             Write CSV to FILE (default: stdout)~n",
               []).

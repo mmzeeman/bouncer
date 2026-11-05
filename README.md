@@ -33,7 +33,7 @@ Highlights:
 - Automatic rekeying of the send key after a configured number of frames,
   bytes, or milliseconds.
 - A benchmark harness, `tools/bouncer_bench`, that measures bouncer against
-  plain `inet_tcp` for latency, throughput, and concurrent mailbox traffic.
+  plain `inet_tcp` and `inet_tls` for latency, throughput, and concurrent mailbox traffic.
 
 ## Setup: four nodes on four machines (alice, bob, carol, dave)
 
@@ -315,7 +315,7 @@ Usual workflow:
 
 ## Distribution benchmark
 
-`tools/bouncer_bench` compares `inet_tcp` with `bouncer` using peer nodes on
+`tools/bouncer_bench` compares `inet_tcp`, `inet_tls` and `bouncer` using peer nodes on
 localhost. It measures sequential RPC round-trip latency for small payloads
 and one-way payload throughput for larger RPC requests. It also runs a
 concurrent mailbox workload: multiple Erlang sender processes send ordinary
@@ -340,6 +340,11 @@ Run it after checking out the project (the script builds the project and
 benchmark worker first):
 
     tools/bouncer_bench --output benchmark.csv
+
+`inet_tls` runs with a throwaway self-signed certificate (peer verification
+off) and is reported relative to `inet_tcp`; bouncer rows additionally carry
+`inet_tls_*` columns comparing them against `inet_tls`. Pass `--tls false` to
+skip the TLS reference.
 
 Use `--help` to see matrix and workload options. The worker reports one CSV row
 per workload/configuration. It starts temporary peers and key directories,
