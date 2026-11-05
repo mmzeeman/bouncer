@@ -337,7 +337,7 @@ receive_data(Socket, Receiver, DHandle, OwnName) ->
 deliver_events([], _DHandle) ->
     ok;
 deliver_events([{packet, Data} | Rest], DHandle) ->
-    erlang:dist_ctrl_put_data(DHandle, iolist_to_binary(Data)),
+    erlang:dist_ctrl_put_data(DHandle, Data),
     deliver_events(Rest, DHandle);
 deliver_events([tick | Rest], DHandle) ->
     %% An empty distribution-controller input mirrors the example's empty TCP tick packet.
@@ -593,7 +593,8 @@ identity_fingerprint() ->
     end.
 
 socket_options(Settings) ->
-    [binary, {packet, 0},
+    [binary,
+     {packet, 0},
      {active, false},
      {nodelay, true},
      {send_timeout, maps:get(send_timeout_ms, Settings)},

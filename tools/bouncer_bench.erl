@@ -14,12 +14,12 @@
           small_sizes => [32, 256, 1024],
           iterations => 1000,
           large_bytes => 1048576,
-          large_iterations => 16,
+          large_iterations => 200,
           mailbox_workers => 8,
           mailbox_messages => 250,
           mailbox_sizes => [32, 128, 1024],
           warmup => 50,
-          payload => compressible,
+          payload => random,
           tls => true,
           output => "-"}).
 
@@ -332,10 +332,12 @@ start_node(Carrier, Root, Suffix, Settings) ->
                   integer_to_list(maps:get(chunk_size, Settings))]}
         end,
     Dist = atom_to_list(Carrier),
-    Args = ["+S", "2:2", "+SDio", "1", "+SDcpu", "1:1",
+    Args = ["+S", "4:4",
+            "+SDio", "4",
+            "+SDcpu", "4:4",
             "-proto_dist", Dist,
             "-kernel", "net_ticktime", "8",
-            "-kernel", "inet_backend", "socket"
+            "-kernel", "inet_backend", "socket",
             "logger_level", "emergency",
             "inet_dist_use_interface", "{127,0,0,1}",
             "+zdbbl", "1000000"] ++ BouncerArgs ++
@@ -504,9 +506,7 @@ check_rpc(Node, Payload, Size) ->
 make_payload(Size, compressible) ->
     binary:copy(<<"b">>, Size);
 make_payload(Size, random) ->
-    Pattern = list_to_binary([((Byte * 73 + Size * 19) band 16#ff)
-                               || Byte <- lists:seq(0, 255)]),
-    binary:part(binary:copy(Pattern, (Size + 255) div 256), 0, Size).
+    crypto:strong_rand_bytes(Size).
 
 parse_args([], Options) ->
     {ok, Options};
@@ -623,12 +623,12 @@ usage() ->
               "  --small-sizes comma,list  Small payload sizes (default: 32,256,1024)~n"
               "  --iterations N            Small round trips (default: 1000)~n"
               "  --large-bytes N           Bulk payload size (default: 1048576)~n"
-              "  --large-iterations N      Bulk transfers (default: 16)~n"
+              "  --large-iterations N      Bulk transfers (default: 200)~n"
               "  --mailbox-workers N       Concurrent sender processes (default: 8)~n"
               "  --mailbox-messages N      Messages per sender (default: 250)~n"
               "  --mailbox-sizes comma,list Tuple payload sizes (default: 32,128,1024)~n"
               "  --warmup N                Warmup calls per workload (default: 50)~n"
-              "  --payload compressible|random (default: compressible)~n"
+              "  --payload compressible|random (default: random)~n"
               "  --tls true|false          Also measure inet_tls (default: true)~n"
               "  --output FILE             Write CSV to FILE (default: stdout)~n",
               []).
