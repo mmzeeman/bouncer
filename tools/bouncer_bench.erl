@@ -356,14 +356,19 @@ tls_optfile(Root) ->
             Path;
         false ->
             #{server_config := Config} =
-                public_key:pkix_test_data(#{server_chain => #{root => [], peer => []},
-                                            client_chain => #{root => [], peer => []}}),
+                public_key:pkix_test_data(#{server_chain => tls_chain(),
+                                            client_chain => tls_chain()}),
             Options = [{verify, verify_none} | Config],
             Terms = [{server, Options ++ [{fail_if_no_peer_cert, false}]},
                      {client, Options}],
             ok = file:write_file(Path, io_lib:format("~tp.~n", [Terms])),
             Path
     end.
+
+%% SHA-1 signed certificates (the pkix_test_data default) are rejected by
+%% current OTP TLS with no_suitable_signature_algorithm.
+tls_chain() ->
+    #{root => [{digest, sha256}], peer => [{digest, sha256}]}.
 
 stop_pair(PeerA, PeerB) ->
     stop_peer(PeerB),
