@@ -294,7 +294,10 @@ limits() ->
     padding     :: padding(),
     compression :: compression(),
     zstream     :: undefined | zlib:zstream(),
-    rekey_after :: rekey_after(),
+    frames_limit = infinity :: pos_integer() | infinity,
+    bytes_limit = infinity  :: pos_integer() | infinity,
+    ms_limit = infinity     :: pos_integer() | infinity,
+    has_ms = false          :: boolean(),
     clock       :: fun(() -> integer()),
     frames = 0  :: non_neg_integer(),
     bytes = 0   :: non_neg_integer(),
@@ -533,9 +536,19 @@ new_sender(CS, Policy) when is_map(Policy) ->
         padding = Padding,
         compression = Compression,
         zstream = undefined, % must be initialized via tx_start
-        rekey_after = RekeyAfter,
+        frames_limit = limit(frames, RekeyAfter),
+        bytes_limit = limit(bytes, RekeyAfter),
+        ms_limit = limit(ms, RekeyAfter),
+        has_ms = is_list(RekeyAfter) andalso lists:keymember(ms, 1, RekeyAfter),
         clock = Clock,
         t0 = Clock()}.
+
+%% Smallest configured limit of a kind; the atom `infinity` is greater than any
+%% integer in term order, so comparing against it is always false.
+limit(_Kind, never) ->
+    infinity;
+limit(Kind, Limits) ->
+    lists:min([infinity | [N || {K, N} <- Limits, K =:= Kind]]).
 
 -doc """
 Creates a receiver around the receive cipher state of a finished handshake.
@@ -674,21 +687,12 @@ pad({fixed, N}, Flags, Payload) ->
 padded(Flags, Payload, PadLen) ->
     {Flags bor ?F_PAD, <<PadLen:16, Payload/binary, 0:(PadLen * 8)>>}.
 
-rekey_clock(#tx{rekey_after = RekeyAfter, clock = Clock}) when is_list(RekeyAfter) ->
-    case lists:keymember(ms, 1, RekeyAfter) of
-        true -> Clock();
-        false -> 0
-    end;
-rekey_clock(_) ->
-    0.
+rekey_clock(#tx{has_ms = true, clock = Clock}) -> Clock();
+rekey_clock(#tx{}) -> 0.
 
-rekey_due(#tx{rekey_after = never}, _, _) ->
-    false;
-rekey_due(#tx{rekey_after = Limits, frames = Frames, bytes = Bytes, t0 = T0}, Len, Now) ->
-    lists:any(fun({frames, N}) -> Frames + 1 >= N;
-                 ({bytes, B}) -> Bytes + Len >= B;
-                 ({ms, T}) -> Now - T0 >= T
-              end, Limits).
+rekey_due(#tx{frames_limit = FL, bytes_limit = BL, ms_limit = ML,
+              frames = Frames, bytes = Bytes, t0 = T0}, Len, Now) ->
+    Frames + 1 >= FL orelse Bytes + Len >= BL orelse Now - T0 >= ML.
 
 %%
 %% Receiver
