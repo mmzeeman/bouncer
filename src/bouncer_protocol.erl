@@ -897,12 +897,10 @@ padded(Flags, Payload, PadLen) ->
     {Flags bor ?F_PAD, [<<PadLen:16>>, Payload, <<0:(PadLen * 8)>>]}.
 
 
--spec unpad(flags(), iodata()) -> {ok, binary()} | {error, bad_padding}.
+-spec unpad(flags(), iodata()) -> {ok, iodata()} | {error, bad_padding}.
 unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
     {ok, Rest};
-unpad(_, Rest) when is_binary(Rest) ->
-    unpad1(Rest);
-unpad(_, Rest) when is_list(Rest) ->
+unpad(_, Rest) ->
     unpad1(iolist_to_binary(Rest)).
 
 unpad1(<<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->

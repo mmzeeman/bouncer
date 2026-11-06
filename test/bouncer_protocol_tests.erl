@@ -141,6 +141,8 @@ encode_name_test() ->
 unpad_iodata_test() ->
     Rest = [<<4:16>>, [<<"he">>, <<"llo">>], <<0, 0, 0, 0>>],
     ?assertEqual({ok, <<"hello">>}, bouncer_protocol:unpad(8, Rest)),
+    ?assertEqual({ok, <<"hello">>}, bouncer_protocol:unpad(8, iolist_to_binary(Rest))),
+    ?assertEqual({ok, Rest}, bouncer_protocol:unpad(0, Rest)),
     ?assertEqual({error, bad_padding},
                  bouncer_protocol:unpad(8, [<<4:16>>, <<"hello">>, <<1, 0, 0, 0>>])),
     ?assertError(badarg, bouncer_protocol:unpad(8, [<<4:16>>, 256])).
