@@ -325,6 +325,55 @@ feed_empty_binary_test() ->
     {_, R} = pair(?AESGCM, #{}, #{}),
     ?assertMatch({ok, [], _}, ?P:rx_feed(R, <<>>)).
 
+fragmented_frame_boundaries_test_() ->
+    [fun() ->
+        {S, R} = pair(Name, #{}, #{}),
+        Packet = data(random, 300),
+        {Frames, S1} = send(S, Packet),
+        [Frame] = Frames,
+        {Tick, S2} = tick(S1),
+        {Next, _} = send(S2, <<"next">>),
+        Wire = bin([Frame, Tick, Next]),
+        lists:foreach(
+          fun(Split) ->
+                  <<Head:Split/binary, Tail/binary>> = Wire,
+                  {First, R1} = feed(R, Head),
+                  {[], R2} = feed(R1, <<>>),
+                  {Second, _} = feed(R2, Tail),
+                  ?assertEqual([{packet, Packet}, tick, {packet, <<"next">>}],
+                               First ++ Second)
+          end, lists:seq(0, byte_size(Wire)))
+    end || Name <- ?SUITES].
+
+fragmented_invalid_header_test() ->
+    {_, R} = pair(?AESGCM, #{}, #{}),
+    {ok, [], R1} = ?P:rx_feed(R, <<0>>),
+    {ok, [], R2} = ?P:rx_feed(R1, <<>>),
+    {error, bad_length, Dead} = ?P:rx_feed(R2, <<16>>),
+    ?assertMatch({error, bad_length, _}, ?P:rx_feed(Dead, <<0, 17>>)).
+
+fragmented_max_frame_test() ->
+    {S, R} = pair(?AESGCM, #{chunk_size => 65518}, #{}),
+    Packet = data(random, 65518),
+    {[Frame], _} = send(S, Packet),
+    <<First:1/binary, Second:1/binary, Body/binary>> = Frame,
+    {[], R1} = feed(R, First),
+    {[], R2} = feed(R1, Second),
+    {Evs, _} = feed_split(R2, Body, {77, 42, 3}),
+    ?assertEqual([{packet, Packet}], Evs).
+
+fragmented_invalid_frame_drops_events_test() ->
+    {S, R} = pair(?AESGCM, #{}, #{}),
+    {Frames, S1} = send(S, <<"first">>),
+    {BadFrames, _} = send(S1, <<"second">>),
+    [BadFrame] = BadFrames,
+    <<Head:7/binary, Tail/binary>> = flip(BadFrame, 5),
+    {Events, R1} = feed(R, bin([Frames, Head])),
+    ?assertEqual([{packet, <<"first">>}], Events),
+    {error, decrypt_failed, Dead} = ?P:rx_feed(R1, Tail),
+    ?assertMatch({error, decrypt_failed, _}, ?P:rx_feed(Dead, <<>>)),
+    ?assertMatch({error, decrypt_failed, _}, ?P:rx_feed(R, bin([Frames, Head, Tail]))).
+
 %%% ------------------------------------------------------------------
 %%% Ticks and malformed flags
 %%% ------------------------------------------------------------------

@@ -311,7 +311,10 @@ limits() ->
 
 -record(rx, {
     cs                 :: enoise_cipher_state:state(),
-    buf = <<>>         :: binary(),
+    %% Newest fragment first; before the length is known, buf holds one header byte.
+    buf = []           :: [binary()],
+    buf_size = 0       :: non_neg_integer(),
+    expected = undefined :: undefined | 17..65535,
     acc = []           :: [iodata()],
     acc_size = 0       :: non_neg_integer(),
     max_packet         :: pos_integer(),
@@ -741,27 +744,57 @@ rx_start(#rx{accept_compression = false}=Rx) ->
           {ok, [rx_event()], receiver()} | {error, rx_error(), receiver()}.
 rx_feed(#rx{dead = {true, Reason}} = R, Bytes) when is_binary(Bytes) ->
     {error, Reason, R};
-rx_feed(#rx{buf = <<>>} = R, Bytes) when is_binary(Bytes) ->
-    rx_loop(R#rx{buf = Bytes}, []);
-rx_feed(#rx{buf = Buf} = R, Bytes) when is_binary(Bytes) ->
-    rx_loop(R#rx{buf = <<Buf/binary, Bytes/binary>>}, []).
+rx_feed(R, Bytes) when is_binary(Bytes) ->
+    rx_loop(R, Bytes, []).
 
 %%
-rx_loop(#rx{buf = <<Len:16, _/binary>>} = R, _Evs) when Len < ?MIN_CIPHER_LEN ->
+rx_loop(R, <<>>, Evs) ->
+    {ok, lists:reverse(Evs), R};
+rx_loop(#rx{expected = undefined, buf = [<<High>>]} = R, <<Low, Rest/binary>>, Evs) ->
+    rx_header(R#rx{buf = [], buf_size = 0}, (High bsl 8) bor Low, Rest, Evs);
+rx_loop(#rx{expected = undefined} = R, <<Len:16, Rest/binary>>, Evs) ->
+    rx_header(R, Len, Rest, Evs);
+rx_loop(#rx{expected = undefined} = R, <<Byte>>, Evs) ->
+    {ok, lists:reverse(Evs), R#rx{buf = [<<Byte>>], buf_size = 1}};
+rx_loop(#rx{expected = Len, buf = Buf, buf_size = Size} = R, Bytes, Evs) ->
+    Needed = Len - Size,
+    BytesSize = iolist_size(Bytes),
+    case BytesSize >= Needed of
+        true ->
+            <<Part:Needed/binary, Tail/binary>> = Bytes,
+            Cipher = case Buf of
+                         [] -> Part;
+                         _ -> iolist_to_binary(lists:reverse([Part | Buf]))
+                     end,
+            rx_complete(R#rx{buf = [], buf_size = 0, expected = undefined},
+                        Len, Cipher, Tail, Evs);
+        false ->
+            {ok, lists:reverse(Evs),
+             R#rx{buf = [Bytes | Buf], buf_size = Size + BytesSize}}
+    end.
+
+rx_header(R, Len, _Bytes, _Evs) when Len < ?MIN_CIPHER_LEN ->
     rx_fail(R, bad_length);
-rx_loop(#rx{buf = <<Len:16, Rest/binary>>} = R, Evs) when byte_size(Rest) >= Len ->
-    <<Cipher:Len/binary, Tail/binary>> = Rest,
-    case rx_frame(R#rx{buf = Tail}, Len, Cipher) of
-        {ok, none, R1} -> rx_loop(R1, Evs);
-        {ok, Ev, R1} -> rx_loop(R1, [Ev | Evs]);
+rx_header(R, Len, Bytes, Evs) when byte_size(Bytes) >= Len ->
+    <<Cipher:Len/binary, Tail/binary>> = Bytes,
+    rx_complete(R, Len, Cipher, Tail, Evs);
+rx_header(R, Len, <<>>, Evs) ->
+    {ok, lists:reverse(Evs), R#rx{expected = Len}};
+rx_header(R, Len, Bytes, Evs) ->
+    {ok, lists:reverse(Evs),
+     R#rx{buf = [Bytes], buf_size = iolist_size(Bytes), expected = Len}}.
+
+rx_complete(R, Len, Cipher, Tail, Evs) ->
+    case rx_frame(R, Len, Cipher) of
+        {ok, none, R1} -> rx_loop(R1, Tail, Evs);
+        {ok, Ev, R1} -> rx_loop(R1, Tail, [Ev | Evs]);
         {error, Reason} -> rx_fail(R, Reason)
-    end;
-rx_loop(R, Evs) ->
-    {ok, lists:reverse(Evs), R}.
+    end.
 
 %%
 rx_fail(R, Reason) ->
-    {error, Reason, R#rx{dead = {true, Reason}, buf = <<>>, acc = [], acc_size = 0}}.
+    {error, Reason, R#rx{dead = {true, Reason}, buf = [], buf_size = 0,
+                         expected = undefined, acc = [], acc_size = 0}}.
 
 %%
 rx_frame(#rx{max_bytes = Max, since = Since}, Len, _) when Max =/= infinity, Since + Len > Max ->
