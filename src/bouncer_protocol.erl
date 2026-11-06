@@ -305,7 +305,8 @@ limits() ->
 }).
 
 -record(pending, {
-    rest :: iodata()
+    rest :: iodata() | {iovec, [binary()]},
+    size :: pos_integer()
 }).
 
 -record(rx, {
@@ -590,7 +591,7 @@ tx_start(#tx{ compression = none }=Tx) ->
 tx_packet(Packet) ->
     case iolist_size(Packet) of
         0 -> erlang:error(badarg);
-        _ -> #pending{rest = Packet}
+        Size -> #pending{rest = Packet, size = Size}
     end.
 
 %% Produces one frame of the packet. The caller may do other work (including
@@ -601,17 +602,37 @@ tx_packet(Packet) ->
 %% uses the new key.
 -spec tx_next(sender(), pending()) ->
           {iolist(), sender(), more, pending()} | {iolist(), sender(), done}.
-tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest}) ->
-    case iolist_size(Rest) > Chunk of
+tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest, size = Size}) ->
+    case Size > Chunk of
         true ->
-            %% Only packets larger than one chunk are flattened; the tail stays a sub-binary.
-            <<Part:Chunk/binary, Tail/binary>> = iolist_to_binary(Rest),
+            {Part, Tail} = split_packet(Rest, Chunk),
             {Frame, S1} = tx_data(S, Part, 0),
-            {Frame, S1, more, #pending{rest = Tail}};
+            {Frame, S1, more, #pending{rest = Tail, size = Size - Chunk}};
         false ->
-            {Frame, S1} = tx_data(S, Rest, ?F_LAST),
+            {Frame, S1} = tx_data(S, pending_data(Rest), ?F_LAST),
             {Frame, S1, done}
     end.
+
+split_packet(Rest, Chunk) when is_binary(Rest) ->
+    <<Part:Chunk/binary, Tail/binary>> = Rest,
+    {Part, Tail};
+split_packet({iovec, Iovec}, Chunk) ->
+    split_iovec(Iovec, Chunk, []);
+split_packet(Rest, Chunk) ->
+    split_iovec(erlang:iolist_to_iovec(Rest), Chunk, []).
+
+split_iovec([Bin | Rest], Size, Acc) when byte_size(Bin) < Size ->
+    split_iovec(Rest, Size - byte_size(Bin), [Bin | Acc]);
+split_iovec([Bin | Rest], Size, Acc) ->
+    <<Part:Size/binary, Tail/binary>> = Bin,
+    Remaining = case Tail of
+                    <<>> -> Rest;
+                    _ -> [Tail | Rest]
+                end,
+    {lists:reverse([Part | Acc]), {iovec, Remaining}}.
+
+pending_data({iovec, Iovec}) -> Iovec;
+pending_data(Data) -> Data.
 
 %% Produces a keepalive frame. It is padded like data frames, so with padding
 %% enabled it is indistinguishable from data by length. May be called between the

@@ -208,6 +208,40 @@ roundtrip_iodata_test() ->
     {Frames, _} = send(S, [<<"he">>, [<<"llo">>, $ ], "world"]),
     ?assertEqual([{packet, <<"hello world">>}], element(1, feed(R, bin(Frames)))).
 
+multiframe_iodata_test_() ->
+    Packets = [[<<>>, [1, 2, <<3, 4, 5>>], <<>>, [6 | <<7, 8, 9>>]],
+               [<<"abcdefgh">>, <<>>, <<"ijklmnop">>, <<"q">>],
+               [binary:copy(<<42>>, 32), [], [<<1>>, binary:copy(<<43>>, 33)]],
+               [binary:copy(<<10>>, 8) | binary:copy(<<11>>, 40)]],
+    [fun() ->
+        {S, R} = pair(Name, #{chunk_size => 8, compression => Compression},
+                      #{accept_compression => true}),
+        Expected = bin(Packet),
+        {Frames, _} = send(S, Packet),
+        ?assertEqual((byte_size(Expected) + 7) div 8, length(Frames)),
+        ?assertEqual([{packet, Expected}], element(1, feed(R, bin(Frames))))
+     end || Name <- ?SUITES, Compression <- [none, {zlib, 0}], Packet <- Packets].
+
+iodata_tick_between_chunks_test() ->
+    {S, R} = pair(?AESGCM, #{chunk_size => 8}, #{}),
+    Packet = [<<"abc">>, [<<"defghijk">> | <<"lmnop">>], <<"qrstuv">>],
+    {First, S1, more, Pending} = ?P:tx_next(S, ?P:tx_packet(Packet)),
+    {Tick, S2} = tick(S1),
+    {Rest, _} = send_loop(S2, Pending, []),
+    ?assertEqual([tick, {packet, bin(Packet)}],
+                 element(1, feed(R, bin([First, Tick, Rest])))).
+
+compressed_multiframe_iodata_test() ->
+    {Tx, Rx} = handshake(?AESGCM),
+    S = new_sender(Tx, #{chunk_size => 256, compression => {zlib, 0}}),
+    R = new_receiver(Rx, #{accept_compression => true}),
+    Packet = [binary:copy(<<"a">>, 300), [binary:copy(<<"b">>, 300)]],
+    {Frames, _} = send(S, Packet),
+    Wire = bin(Frames),
+    ?assert(lists:all(fun(Flags) -> Flags band ?COMP =/= 0 end,
+                      stream_flags(Tx, Wire))),
+    ?assertEqual([{packet, bin(Packet)}], element(1, feed(R, Wire))).
+
 roundtrip_chunk_size_extremes_test_() ->
     [{lists:flatten(io_lib:format("chunk ~p size ~p", [C, N])), fun() ->
         {S, R} = pair(?CHACHA, #{chunk_size => C}, #{}),
