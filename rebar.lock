@@ -1,0 +1,4 @@
+[{<<"enoise">>,
+  {git,"https://github.com/mmzeeman/enoise.git",
+       {ref,"06429fa1e2f2cca7a6e94fe54676eedc84ab14e9"}},
+  0}].
