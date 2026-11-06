@@ -5,9 +5,7 @@
 
 -define(COUNTER, {?MODULE, pending}).
 
--doc """
-Acquires one pending-handshake slot. `max_pending` defaults to 64.
-""".
+%% Acquires one pending-handshake slot. `max_pending` defaults to 64.
 -spec acquire(map()) -> ok | {error, busy}.
 acquire(Opts) when is_map(Opts) ->
     Limit = maps:get(max_pending, Opts, 64),
@@ -21,7 +19,7 @@ acquire(Opts) when is_map(Opts) ->
 acquire(_) ->
     {error, busy}.
 
--doc "Releases one pending-handshake slot acquired with `acquire/1`.".
+%% Releases one pending-handshake slot acquired with `acquire/1`.
 -spec release() -> ok.
 release() ->
     atomics:sub(counter(), 1, 1),

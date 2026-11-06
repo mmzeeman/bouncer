@@ -1,15 +1,15 @@
+
 -module(bouncer_guests).
--moduledoc """
-Command line tool to manage the key directory and the authorized directories
-("guests") of a node. A thin layer over `bouncer_keys`; it only edits files and
-does not talk to a running node.
 
-Built as an escript (`rebar3 escriptize`). Uses only `bouncer_keys`, `crypto`,
-`logger` and the standard library. Secret key material is never printed.
-
-Exit codes: 0 ok, 1 not found, 2 usage error, 3 error (I/O, permissions,
-invalid key file), 4 fingerprint mismatch.
-""".
+% Command line tool to manage the key directory and the authorized directories
+% ("guests") of a node. A thin layer over `bouncer_keys`; it only edits files and
+% does not talk to a running node.
+%
+% Built as an escript (`rebar3 escriptize`). Uses only `bouncer_keys`, `crypto`,
+% `logger` and the standard library. Secret key material is never printed.
+%
+% Exit codes: 0 ok, 1 not found, 2 usage error, 3 error (I/O, permissions,
+% invalid key file), 4 fingerprint mismatch.
 
 -export([main/1, run/2]).
 
@@ -19,9 +19,9 @@ invalid key file), 4 fingerprint mismatch.
 -type env() :: #{stdin => binary() | fun(() -> binary())}.
 -export_type([env/0]).
 
-%%% ------------------------------------------------------------------
-%%% Entry points
-%%% ------------------------------------------------------------------
+%%
+%% Entry points
+%%
 
 -spec main([string()]) -> no_return().
 main(Args) ->
@@ -32,7 +32,7 @@ main(Args) ->
     io:put_chars(standard_error, Err),
     erlang:halt(Code).
 
--doc "Runs a command line; returns the exit code and what to print.".
+% "Runs a command line; returns the exit code and what to print.".
 -spec run([string()], env()) -> {0..4, iodata(), iodata()}.
 run(Args, Env) ->
     try
@@ -57,9 +57,9 @@ read_stdin(Acc) ->
         Line -> read_stdin(<<Acc/binary, (unicode:characters_to_binary(Line))/binary>>)
     end.
 
-%%% ------------------------------------------------------------------
-%%% Argument parsing
-%%% ------------------------------------------------------------------
+%%
+%% Argument parsing
+%%
 
 dispatch([], _Env) ->
     throw({usage, "missing command"});
@@ -167,9 +167,9 @@ usage() ->
     "until they are closed or the node restarts. This tool only edits files; it does\n"
     "not talk to a running node.\n".
 
-%%% ------------------------------------------------------------------
-%%% Commands
-%%% ------------------------------------------------------------------
+%%
+%% Commands
+%%
 
 command("init", {O, Pos}, _Env) ->
     no_positional(Pos),
@@ -453,9 +453,9 @@ cmd_check(O, Pos) ->
             end
     end.
 
-%%% ------------------------------------------------------------------
-%%% Helpers
-%%% ------------------------------------------------------------------
+%%
+%% Helpers
+%%
 
 quiet(O, Text) ->
     case maps:is_key(quiet, O) of

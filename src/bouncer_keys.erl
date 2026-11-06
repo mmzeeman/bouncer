@@ -1,18 +1,17 @@
 -module(bouncer_keys).
--moduledoc """
-Key management and peer authorization for the Noise (X25519) distribution carrier.
 
-This module is called while the VM is still booting (from `listen/2`), so it is
-made of pure functions and file I/O only: no processes, no ETS, no application
-environment. Settings come from an `Opts` map, `-bouncer Key Value` init
-arguments, `BOUNCER_*` environment variables, and defaults (in that order).
-
-Node names and keys received from the network are untrusted: they are never
-used to build file paths. Authorization is done by parsing the contents of the
-`*.pub` files in the authorized directories.
-
-Secret key material is never logged and never part of an error term.
-""".
+%% Key management and peer authorization for the Noise (X25519) distribution carrier.
+%% 
+%% This module is called while the VM is still booting (from `listen/2`), so it is
+%% made of pure functions and file I/O only: no processes, no ETS, no application
+%% environment. Settings come from an `Opts` map, `-bouncer Key Value` init
+%% arguments, `BOUNCER_*` environment variables, and defaults (in that order).
+%% 
+%% Node names and keys received from the network are untrusted: they are never
+%% used to build file paths. Authorization is done by parsing the contents of the
+%% `*.pub` files in the authorized directories.
+%% 
+%% Secret key material is never logged and never part of an error term.
 
 -include_lib("kernel/include/file.hrl").
 
@@ -58,17 +57,15 @@ Secret key material is never logged and never part of an error term.
                         fingerprint := binary(),
                         generated := boolean()}.
 
-%%% ------------------------------------------------------------------
-%%% Settings
-%%% ------------------------------------------------------------------
+%%
+%% Settings
+%%
 
--doc """
-Directory holding the identity key of `NodeName`.
-
-Uses the `dir` setting when present, otherwise
-`filename:basedir(user_config, "bouncer")/NodeName`. Raises `badarg` when a
-default path is needed and `NodeName` is not a valid node name.
-""".
+%% Directory holding the identity key of `NodeName`.
+%% 
+%% Uses the `dir` setting when present, otherwise
+%% `filename:basedir(user_config, "bouncer")/NodeName`. Raises `badarg` when a
+%% default path is needed and `NodeName` is not a valid node name.
 -spec node_key_dir(node_name(), opts()) -> file:filename().
 node_key_dir(NodeName, Opts) ->
     case setting(dir, Opts) of
@@ -89,10 +86,8 @@ node_key_dir(NodeName, Opts) ->
             end
     end.
 
--doc """
-Authorized directories: the `authorized_dirs` setting (a list, or a
-colon-separated string), defaulting to `<keydir>/authorized.d`.
-""".
+%% Authorized directories: the `authorized_dirs` setting (a list, or a
+%% colon-separated string), defaulting to `<keydir>/authorized.d`.
 -spec authorized_dirs(node_name(), opts()) -> [file:filename()].
 authorized_dirs(NodeName, Opts) ->
     case setting(authorized_dirs, Opts) of
@@ -188,17 +183,15 @@ dirs_for(Opts) ->
             []
     end.
 
-%%% ------------------------------------------------------------------
-%%% Identity key
-%%% ------------------------------------------------------------------
+%%
+%% Identity key
+%%
 
--doc """
-Loads the identity key of `NodeName`, generating and persisting it when
-missing (unless generation is disabled).
-
-Concurrent starters end up with the same key: the key file is published with
-`file:make_link/2`, and the loser of the race reads the winner's key.
-""".
+%% Loads the identity key of `NodeName`, generating and persisting it when
+%% missing (unless generation is disabled).
+%%
+%% Concurrent starters end up with the same key: the key file is published with
+%% `file:make_link/2`, and the loser of the race reads the winner's key.
 -spec load_or_generate(node_name(), opts()) -> {ok, key_info()} | {error, term()}.
 load_or_generate(NodeName, Opts) ->
     case name_to_binary(NodeName) of
@@ -332,10 +325,8 @@ decode_key(B64) ->
         _:_ -> error
     end.
 
--doc """
-CLI helper: prints the authorized line of this node to stdout and the
-fingerprint to stderr. Never generates a key. Halts with status 1 on error.
-""".
+%% CLI helper: prints the authorized line of this node to stdout and the
+%% fingerprint to stderr. Never generates a key. Halts with status 1 on error.
 -spec print_public() -> ok.
 print_public() ->
     Name = local_node_name(),
@@ -353,46 +344,42 @@ fail(Fmt, Args) ->
     io:format(standard_error, "bouncer_keys: " ++ Fmt ++ "~n", Args),
     erlang:halt(1).
 
-%%% ------------------------------------------------------------------
-%%% Public key helpers
-%%% ------------------------------------------------------------------
+%%
+%% Public key helpers
+%%
 
--doc """
-`SHA256:` followed by the unpadded base64 of the SHA-256 of the public key.
-Accepts a bare public key or a `key_info()`.
-""".
+%% `SHA256:` followed by the unpadded base64 of the SHA-256 of the public key.
+%% Accepts a bare public key or a `key_info()`.
 -spec fingerprint(binary() | key_info()) -> binary().
 fingerprint(#{fingerprint := Fingerprint}) -> Fingerprint;
 fingerprint(PublicKey) when is_binary(PublicKey) ->
     <<"SHA256:", (base64:encode(crypto:hash(sha256, PublicKey),
                                 #{padding => false}))/binary>>.
 
-%%% ------------------------------------------------------------------
-%%% key_info() accessors
-%%% ------------------------------------------------------------------
+%%
+%% key_info() accessors
+%%
 
--doc "The public key (32 bytes).".
+%% The public key (32 bytes).
 -spec public(key_info()) -> binary().
 public(#{public := Public}) -> Public.
 
--doc "The secret key (32 bytes). Never log or print the result.".
+%% The secret key (32 bytes). Never log or print the result.
 -spec secret(key_info()) -> binary().
 secret(#{secret := Secret}) -> Secret().
 
--doc "True when `load_or_generate/2` created this key.".
+%% True when `load_or_generate/2` created this key.
 -spec generated(key_info()) -> boolean().
 generated(#{generated := Generated}) -> Generated.
 
--doc "The line to put in an authorized directory file: `<name> <base64key>\\n`.".
+%% The line to put in an authorized directory file: `<name> <base64key>\\n`.
 -spec authorized_line(node_name(), binary()) -> binary().
 authorized_line(NodeName, PublicKey) ->
     {ok, Name} = name_to_binary(NodeName),
     <<Name/binary, " ", (base64:encode(PublicKey))/binary, "\n">>.
 
--doc """
-Accepts a binary `name@host` of at most 255 bytes made of `[A-Za-z0-9_.-]`,
-without `..` and without a leading `.` in either part. Creates no atoms.
-""".
+%% Accepts a binary `name@host` of at most 255 bytes made of `[A-Za-z0-9_.-]`,
+%% without `..` and without a leading `.` in either part. Creates no atoms.
 -spec valid_node_name(term()) -> boolean().
 valid_node_name(Name) when is_binary(Name), byte_size(Name) =< ?MAX_NAME ->
     case binary:split(Name, <<"@">>, [global]) of
@@ -418,14 +405,12 @@ valid_chars(<<C, Rest/binary>>) when C >= $a, C =< $z;
 valid_chars(_) ->
     false.
 
-%%% ------------------------------------------------------------------
-%%% Authorization
-%%% ------------------------------------------------------------------
+%%
+%% Authorization
+%%
 
--doc """
-Checks a peer announced during a handshake. Touches no files when `Name` is
-not a valid node name. Reads the authorized directories fresh on every call.
-""".
+%% Checks a peer announced during a handshake. Touches no files when `Name` is
+%% not a valid node name. Reads the authorized directories fresh on every call.
 -spec check_peer(binary(), binary(), opts()) -> allowed | denied | unknown_name.
 check_peer(Name, PublicKey, Opts) ->
     case valid_node_name(Name) of
@@ -450,11 +435,9 @@ matches(<<_:32/binary>> = Pub, Keys) ->
 matches(_, _) ->
     false.
 
--doc """
-Authorizes a peer by writing `<name>.<hex>.pub` into the first authorized
-directory. Idempotent for the same key. An optional single-line `comment` in
-`Opts` is appended to the line (`name key comment`).
-""".
+%% Authorizes a peer by writing `<name>.<hex>.pub` into the first authorized
+%% directory. Idempotent for the same key. An optional single-line `comment` in
+%% `Opts` is appended to the line (`name key comment`).
 -spec add_peer(binary(), binary(), opts()) -> {ok, file:filename()} | {error, term()}.
 add_peer(Name, PublicKey, Opts) ->
     case {valid_node_name(Name), is_binary(PublicKey) andalso byte_size(PublicKey) =:= 32} of
@@ -519,7 +502,7 @@ add_peer_in(Dir, Name, Pub, Comment) ->
             {error, {mkdir_failed, Reason, Dir}}
     end.
 
--doc "Deletes the files of `Name` whose key has fingerprint `Fingerprint`.".
+%% Deletes the files of `Name` whose key has fingerprint `Fingerprint`.
 -spec remove_peer(binary(), string() | binary(), opts()) -> ok | {error, term()}.
 remove_peer(Name, Fingerprint, Opts) ->
     Fp = unicode:characters_to_binary(Fingerprint),
@@ -532,12 +515,10 @@ remove_peer(Name, Fingerprint, Opts) ->
         {_, [Error | _]} -> Error
     end.
 
--doc """
-Lists the entries of all authorized directories, with the same loader rules as
-`check_peer/3`. Returns the entries and the files that were skipped (with the
-reason). A directory that is refused (not a directory, writable by
-group/other, unreadable) is an error; a missing directory is empty.
-""".
+%% Lists the entries of all authorized directories, with the same loader rules as
+%% `check_peer/3`. Returns the entries and the files that were skipped (with the
+%% reason). A directory that is refused (not a directory, writable by
+%% group/other, unreadable) is an error; a missing directory is empty.
 -spec list_peers(opts()) -> {ok, [peer_entry()], [skipped()]} | {error, term()}.
 list_peers(Opts) ->
     list_peers_1(dirs_for(Opts), [], []).
@@ -550,11 +531,9 @@ list_peers_1([Dir | Rest], Entries, Skips) ->
         {error, _} = Error -> Error
     end.
 
--doc """
-Creates the key directory (mode 0700) and the authorized directories (mode
-0755) of `NodeName`. Existing directories are left as they are; modes are
-never loosened.
-""".
+%% Creates the key directory (mode 0700) and the authorized directories (mode
+%% 0755) of `NodeName`. Existing directories are left as they are; modes are
+%% never loosened.
 -spec ensure_dirs(node_name(), opts()) -> ok | {error, term()}.
 ensure_dirs(NodeName, Opts) ->
     case name_to_binary(NodeName) of
@@ -578,9 +557,9 @@ ensure_dirs_1([{Dir, Mode} | Rest]) ->
         {error, Reason} -> {error, {mkdir_failed, Reason, Dir}}
     end.
 
-%%% ------------------------------------------------------------------
-%%% Loader
-%%% ------------------------------------------------------------------
+%%
+%% Loader
+%%
 
 load_all(Dirs) ->
     lists:append([case load_dir(D) of
@@ -694,9 +673,9 @@ blank(Line) ->
 warn(Path, Msg) ->
     logger:warning("bouncer_keys: ~ts: ~ts", [Path, Msg]).
 
-%%% ------------------------------------------------------------------
-%%% File helpers
-%%% ------------------------------------------------------------------
+%%
+%% File helpers
+%%
 
 %% Creates Dir (and missing parents); only a newly created Dir gets Mode.
 mkdir_p(Dir, Mode) ->

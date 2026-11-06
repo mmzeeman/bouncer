@@ -1,6 +1,10 @@
 %% Pure wire-format helpers for the bouncer Noise handshake.
 -module(bouncer_protocol).
 
+-ifdef(TEST).
+-export([unpad/2]).
+-endif.
+
 -export([
     hello_header/1,
     hello/2,
@@ -22,22 +26,29 @@
 
 %% Transport framing (see the TRANSPORT FRAMING section at the bottom).
 -export([
-    sender_policy/1,
     new_sender/2,
-
+    sender_policy/1,
     tx_start/1,
     tx_packet/1,
     tx_next/2,
     tx_tick/1,
 
-    receiver_policy/1,
     new_receiver/2,
+    receiver_policy/1,
     rx_start/1,
     rx_feed/2
 ]).
 
--export_type([sender/0, receiver/0, pending/0, sender_policy/0, receiver_policy/0,
-              rx_event/0, rx_error/0, policy_error/0]).
+-export_type([
+    sender/0,
+    receiver/0,
+    pending/0,
+    sender_policy/0,
+    receiver_policy/0,
+    rx_event/0,
+    rx_error/0,
+    policy_error/0
+]).
 
 -define(HELLO_MAGIC, <<"BNCR">>).
 -define(VERSION, 1).
@@ -102,11 +113,9 @@ parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
 parse_hello_header(_, _) ->
     {error, bad_hello_header}.
 
--doc """
-Parses the eight-byte responder header. Successful message lengths must be
-within the message-2 bounds in `limits/0`; rejection statuses must have length
-zero.
-""".
+%% Parses the eight-byte responder header. Successful message lengths must be
+%% within the message-2 bounds in `limits/0`; rejection statuses must have length
+%% zero.
 -spec parse_reply_header(binary()) ->
           {ok, 1..16#ffff} |
           {error, unsupported_version | unsupported_suite | bad_reply_header}.
@@ -125,10 +134,8 @@ parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
 parse_reply_header(_) ->
     {error, bad_reply_header}.
 
--doc """
-Parses the two-byte message-3 length prefix, requiring the length to fit the
-message-3 bounds in `limits/0`.
-""".
+%% Parses the two-byte message-3 length prefix, requiring the length to fit the
+%% message-3 bounds in `limits/0`.
 -spec parse_msg3_prefix(binary()) -> {ok, 1..16#ffff} | {error, bad_msg3_length}.
 parse_msg3_prefix(<<Len:16>>) ->
     {Min, Max} = maps:get(msg3_length, limits()),
@@ -163,10 +170,8 @@ encode_name(Name)  when is_binary(Name),
                         byte_size(Name) =< ?MAX_NAME_LENGTH ->
     <<(byte_size(Name)):16, Name/binary>>.
 
--doc """
-Decodes a length-prefixed node name. Rejects malformed/trailing data and
-returns the name as a binary without creating an atom.
-""".
+%% Decodes a length-prefixed node name. Rejects malformed/trailing data and
+%% returns the name as a binary without creating an atom.
 -spec decode_name(binary()) -> {ok, binary()} | {error, bad_name | bad_payload}.
 decode_name(<<Len:16, Name:Len/binary>>) ->
     case bouncer_keys:valid_node_name(Name) of
@@ -250,7 +255,8 @@ limits() ->
 -define(MIN_CIPHER_LEN, 17).
 -define(MAX_PLAINTEXT, 65519).
 -define(MAX_PAYLOAD, 65518).
--define(DEFAULT_CHUNK_SIZE, 16384).
+-define(DEFAULT_CHUNK_SIZE, 65518).
+-define(DEFAULT_PADDING, {bucket, 1400}).
 -define(DEFAULT_REKEY_BYTES, 1073741824).
 -define(DEFAULT_MAX_PACKET, 67108864).
 
@@ -261,8 +267,9 @@ limits() ->
 -define(F_REKEY, 2#00010000).
 -define(F_RESERVED, 2#11100000).
 
--type padding() :: none | {bucket, 1..65519} | {fixed, 4..65519}.
+-type padding()     :: none | {bucket, 1..65519} | {fixed, 4..65519}.
 -type compression() :: none | {zlib, 0..65518}.
+-type flags()       :: byte(). % bit 0 last, 1 tick, 2 comp, 3 pad, 4 rekey, 5-7 reserved (0)
 -type rekey_limit() :: {frames, pos_integer()} | {bytes, pos_integer()} | {ms, pos_integer()}.
 -type rekey_after() :: never | [rekey_limit(), ...].
 
@@ -299,13 +306,17 @@ limits() ->
 }).
 
 -record(pending, {
-    rest :: binary()
+    rest :: iodata() | {iovec, [binary()]},
+    size :: pos_integer()
 }).
 
 -record(rx, {
     cs                 :: enoise_cipher_state:state(),
-    buf = <<>>         :: binary(),
-    acc = []           :: [binary()],
+    %% Newest fragment first; before the length is known, buf holds one header byte.
+    buf = []           :: [binary()],
+    buf_size = 0       :: non_neg_integer(),
+    expected = undefined :: undefined | 17..65535,
+    acc = []           :: [iodata()],
     acc_size = 0       :: non_neg_integer(),
     max_packet         :: pos_integer(),
     accept_compression :: boolean(),
@@ -319,36 +330,34 @@ limits() ->
 -opaque receiver() :: #rx{}.
 -opaque pending() :: #pending{}.
 
-%%% ------------------------------------------------------------------
-%%% Policies
-%%% ------------------------------------------------------------------
+%%
+%% Policies
+%%
 
--doc """
-Validates sender settings and fills in defaults.
-
-`Layers` is one settings map or a list of maps, highest precedence first
-(the caller passes Opts, then `-bouncer` flags, then env, which gives the
-precedence Opts > flag > env > default; this function reads none of them
-itself). A value is either the native term or the string form used by flags and
-env. Unknown keys are ignored.
-
-| Key           | Native                                        | String                       | Default          |
-|---------------|-----------------------------------------------|------------------------------|------------------|
-| `chunk_size`  | `1..65518`                                    | `"16384"`                    | `16384`          |
-| `padding`     | `none`, `{bucket, N}`, `{fixed, N}`           | `"none"`, `"bucket:512"`, `"fixed:4096"` | `none` |
-| `compression` | `none`, `{zlib, MinSize}`                     | `"none"`, `"zlib:256"`       | `none`           |
-| `rekey_after` | `never` or list of `{frames,N}`/`{bytes,B}`/`{ms,T}` | `"never"`, `"bytes:1073741824,ms:3600000"` | `[{bytes, 1073741824}]` |
-| `clock`       | `fun(() -> integer())` in ms (Opts only, for tests) | -                      | monotonic time   |
-
-With padding the usable chunk size shrinks so that every frame fits: for
-`{fixed, N}` a chunk is at most `N - 3` bytes, for `{bucket, N}` at most
-`(65519 div N) * N - 3`.
-""".
+%% Validates sender settings and fills in defaults.
+%% 
+%% `Layers` is one settings map or a list of maps, highest precedence first
+%% (the caller passes Opts, then `-bouncer` flags, then env, which gives the
+%% precedence Opts > flag > env > default; this function reads none of them
+%% itself). A value is either the native term or the string form used by flags and
+%% env. Unknown keys are ignored.
+%% 
+%% | Key           | Native                                        | String                       | Default          |
+%% |---------------|-----------------------------------------------|------------------------------|------------------|
+%% | `chunk_size`  | `1..65518`                                    | `"16384"`                    | `65518`          |
+%% | `padding`     | `none`, `{bucket, N}`, `{fixed, N}`           | `"none"`, `"bucket:512"`, `"fixed:4096"` | `{bucket, 1400}` |
+%% | `compression` | `none`, `{zlib, MinSize}`                     | `"none"`, `"zlib:256"`       | `none`           |
+%% | `rekey_after` | `never` or list of `{frames,N}`/`{bytes,B}`/`{ms,T}` | `"never"`, `"bytes:1073741824,ms:3600000"` | `[{bytes, 1073741824}]` |
+%% | `clock`       | `fun(() -> integer())` in ms (Opts only, for tests) | -                      | monotonic time   |
+%% 
+%% With padding the usable chunk size shrinks so that every frame fits: for
+%% `{fixed, N}` a chunk is at most `N - 3` bytes, for `{bucket, N}` at most
+%% `(65519 div N) * N - 3`.
 -spec sender_policy([map()] | map()) -> {ok, sender_policy()} | {error, policy_error()}.
 sender_policy(Layers) ->
     try
         {ok, #{chunk_size => setting(chunk_size, Layers, ?DEFAULT_CHUNK_SIZE, fun parse_chunk_size/1),
-               padding => setting(padding, Layers, none, fun parse_padding/1),
+               padding => setting(padding, Layers, ?DEFAULT_PADDING, fun parse_padding/1),
                compression => setting(compression, Layers, none, fun parse_compression/1),
                rekey_after => setting(rekey_after, Layers, [{bytes, ?DEFAULT_REKEY_BYTES}],
                                       fun parse_rekey_after/1),
@@ -357,16 +366,14 @@ sender_policy(Layers) ->
         throw:{invalid_setting, _, _, _} = Error -> {error, Error}
     end.
 
--doc """
-Validates receiver settings and fills in defaults (see `sender_policy/1` for
-the layering).
-
-| Key                       | Native / string                   | Default    |
-|---------------------------|-----------------------------------|------------|
-| `max_packet`              | positive integer                  | `67108864` |
-| `accept_compression`      | `true` / `false`                  | `false`    |
-| `max_bytes_without_rekey` | positive integer or `infinity`    | `infinity` |
-""".
+%% Validates receiver settings and fills in defaults (see `sender_policy/1` for
+%% the layering).
+%% 
+%% | Key                       | Native / string                   | Default    |
+%% |---------------------------|-----------------------------------|------------|
+%% | `max_packet`              | positive integer                  | `67108864` |
+%% | `accept_compression`      | `true` / `false`                  | `false`    |
+%% | `max_bytes_without_rekey` | positive integer or `infinity`    | `infinity` |
 -spec receiver_policy([map()] | map()) -> {ok, receiver_policy()} | {error, policy_error()}.
 receiver_policy(Layers) ->
     try
@@ -397,10 +404,16 @@ parse_chunk_size(V) ->
         _ -> {error, "an integer from 1 to 65518"}
     end.
 
-parse_padding(none) -> {ok, none};
-parse_padding({bucket, N}) when is_integer(N), N >= 1, N =< ?MAX_PLAINTEXT -> {ok, {bucket, N}};
-parse_padding({fixed, N}) when is_integer(N), N >= 4, N =< ?MAX_PLAINTEXT -> {ok, {fixed, N}};
-parse_padding(V) when is_list(V); is_binary(V) ->
+parse_padding(none) ->
+    {ok, none};
+parse_padding({bucket, N})
+  when is_integer(N), N >= 1, N =< ?MAX_PLAINTEXT ->
+    {ok, {bucket, N}};
+parse_padding({fixed, N})
+  when is_integer(N), N >= 4, N =< ?MAX_PLAINTEXT ->
+    {ok, {fixed, N}};
+parse_padding(V)
+  when is_list(V); is_binary(V) ->
     case string:split(to_string(V), ":") of
         ["none"] -> {ok, none};
         ["bucket", N] -> parse_padding({bucket, to_int(N)});
@@ -413,9 +426,13 @@ parse_padding(_) ->
 padding_error() ->
     {error, "none | {bucket, 1..65519} | {fixed, 4..65519} (strings: none, bucket:N, fixed:N)"}.
 
-parse_compression(none) -> {ok, none};
-parse_compression({zlib, N}) when is_integer(N), N >= 0, N =< ?MAX_PAYLOAD -> {ok, {zlib, N}};
-parse_compression(V) when is_list(V); is_binary(V) ->
+parse_compression(none) ->
+    {ok, none};
+parse_compression({zlib, N})
+  when is_integer(N), N >= 0, N =< ?MAX_PAYLOAD ->
+    {ok, {zlib, N}};
+parse_compression(V)
+  when is_list(V); is_binary(V) ->
     case string:split(to_string(V), ":") of
         ["none"] -> {ok, none};
         ["zlib", N] -> parse_compression({zlib, to_int(N)});
@@ -429,12 +446,14 @@ compression_error() ->
 
 parse_rekey_after(never) ->
     {ok, never};
-parse_rekey_after([_ | _] = L) when is_tuple(hd(L)) ->
+parse_rekey_after([_ | _] = L)
+  when is_tuple(hd(L)) ->
     case lists:all(fun rekey_limit_ok/1, L) of
         true -> {ok, L};
         false -> rekey_error()
     end;
-parse_rekey_after(V) when is_list(V); is_binary(V) ->
+parse_rekey_after(V)
+  when is_list(V); is_binary(V) ->
     case to_string(V) of
         "never" ->
             {ok, never};
@@ -474,8 +493,8 @@ parse_max_packet(V) ->
         _ -> {error, "a positive integer"}
     end.
 
-parse_max_bytes(infinity) -> {ok, infinity};
-parse_max_bytes("infinity") -> {ok, infinity};
+parse_max_bytes(infinity)       -> {ok, infinity};
+parse_max_bytes("infinity")     -> {ok, infinity};
 parse_max_bytes(<<"infinity">>) -> {ok, infinity};
 parse_max_bytes(V) ->
     case to_int(V) of
@@ -494,28 +513,15 @@ parse_bool(V) when is_list(V); is_binary(V) ->
 parse_bool(_) ->
     {error, "true | false"}.
 
-to_string(V) when is_binary(V) -> unicode:characters_to_list(V);
-to_string(V) -> V.
+%%
+%% Sender
+%%
 
-to_int(N) when is_integer(N) -> N;
-to_int(V) when is_list(V); is_binary(V) ->
-    case catch string:to_integer(to_string(V)) of
-        {N, ""} when is_integer(N) -> N;
-        _ -> error
-    end;
-to_int(_) -> error.
-
-%%% ------------------------------------------------------------------
-%%% Sender
-%%% ------------------------------------------------------------------
-
--doc """
-Creates a sender around the transmit cipher state of a finished handshake.
-
-`Policy` is a settings map as accepted by `sender_policy/1` (an already
-validated policy is accepted too). Raises `badarg` for an invalid policy or a
-cipher state without a key.
-""".
+%% Creates a sender around the transmit cipher state of a finished handshake.
+%% 
+%% `Policy` is a settings map as accepted by `sender_policy/1` (an already
+%% validated policy is accepted too). Raises `badarg` for an invalid policy or a
+%% cipher state without a key.
 -spec new_sender(enoise_cipher_state:state(), map()) -> sender().
 new_sender(CS, Policy) when is_map(Policy) ->
     ok = check_keyed(CS),
@@ -544,10 +550,8 @@ limit(_Kind, never) ->
 limit(Kind, Limits) ->
     lists:min([infinity | [N || {K, N} <- Limits, K =:= Kind]]).
 
--doc """
-Creates a receiver around the receive cipher state of a finished handshake.
-`Policy` is a settings map as accepted by `receiver_policy/1`.
-""".
+%% Creates a receiver around the receive cipher state of a finished handshake.
+%% `Policy` is a settings map as accepted by `receiver_policy/1`.
 -spec new_receiver(enoise_cipher_state:state(), map()) -> receiver().
 new_receiver(CS, Policy) when is_map(Policy) ->
     ok = check_keyed(CS),
@@ -574,11 +578,10 @@ effective_chunk(Chunk, none) -> Chunk;
 effective_chunk(Chunk, {fixed, N}) -> min(Chunk, N - 3);
 effective_chunk(Chunk, {bucket, N}) -> min(Chunk, (?MAX_PLAINTEXT div N) * N - 3).
 
--doc """
-Initialization steps which must be done in the controlling process of the socket.
-It must be called at the start of the writing process. This initializes the
-zstream in the controlling process.
-""".
+%% Initialization steps which must be done in the controlling process of the socket.
+%% It must be called at the start of the writing process. This initializes the
+%% zstream in the controlling process.
+-spec tx_start(sender()) -> sender().
 tx_start(#tx{ compression = {zlib, _}}=Tx) ->
     Z = zlib:open(),
     ok = zlib:deflateInit(Z, default, deflated, -15, 8, default),
@@ -586,41 +589,59 @@ tx_start(#tx{ compression = {zlib, _}}=Tx) ->
 tx_start(#tx{ compression = none }=Tx) ->
     Tx.
 
--doc """
-Starts sending one dist packet. Packets are never empty (an empty dist packet
-is a tick, use `tx_tick/1`); an empty packet raises `badarg`.
-""".
+%% Starts sending one dist packet. Packets are never empty (an empty dist packet
+%% is a tick, use `tx_tick/1`); an empty packet raises `badarg`.
 -spec tx_packet(iodata()) -> pending().
 tx_packet(Packet) ->
-    case iolist_to_binary(Packet) of
-        <<>> -> erlang:error(badarg);
-        Bin -> #pending{rest = Bin}
+    case iolist_size(Packet) of
+        0 -> erlang:error(badarg);
+        Size -> #pending{rest = Packet, size = Size}
     end.
 
--doc """
-Produces one frame of the packet. The caller may do other work (including
-`tx_tick/1`) between calls, but must put the frames of one packet on the wire
-contiguously and finish a packet before starting the next. The frame of the
-final chunk carries the `last` flag. A frame carries the `rekey` flag when one
-of the `rekey_after` limits has been reached; the returned sender then already
-uses the new key.
-""".
+%% Produces one frame of the packet. The caller may do other work (including
+%% `tx_tick/1`) between calls, but must put the frames of one packet on the wire
+%% contiguously and finish a packet before starting the next. The frame of the
+%% final chunk carries the `last` flag. A frame carries the `rekey` flag when one
+%% of the `rekey_after` limits has been reached; the returned sender then already
+%% uses the new key.
 -spec tx_next(sender(), pending()) ->
-          {iodata(), sender(), more, pending()} | {iodata(), sender(), done}.
-tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest}) when byte_size(Rest) > Chunk ->
-    <<Part:Chunk/binary, Tail/binary>> = Rest,
-    {Frame, S1} = tx_data(S, Part, 0),
-    {Frame, S1, more, #pending{rest = Tail}};
-tx_next(S, #pending{rest = Rest}) ->
-    {Frame, S1} = tx_data(S, Rest, ?F_LAST),
-    {Frame, S1, done}.
+          {iolist(), sender(), more, pending()} | {iolist(), sender(), done}.
+tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest, size = Size}) ->
+    case Size > Chunk of
+        true ->
+            {Part, Tail} = split_packet(Rest, Chunk),
+            {Frame, S1} = tx_data(S, Part, 0),
+            {Frame, S1, more, #pending{rest = Tail, size = Size - Chunk}};
+        false ->
+            {Frame, S1} = tx_data(S, pending_data(Rest), ?F_LAST),
+            {Frame, S1, done}
+    end.
 
--doc """
-Produces a keepalive frame. It is padded like data frames, so with padding
-enabled it is indistinguishable from data by length. May be called between the
-frames of a packet.
-""".
--spec tx_tick(sender()) -> {iodata(), sender()}.
+split_packet(Rest, Chunk) when is_binary(Rest) ->
+    <<Part:Chunk/binary, Tail/binary>> = Rest,
+    {Part, Tail};
+split_packet({iovec, Iovec}, Chunk) ->
+    split_iovec(Iovec, Chunk, []);
+split_packet(Rest, Chunk) ->
+    split_iovec(erlang:iolist_to_iovec(Rest), Chunk, []).
+
+split_iovec([Bin | Rest], Size, Acc) when byte_size(Bin) < Size ->
+    split_iovec(Rest, Size - byte_size(Bin), [Bin | Acc]);
+split_iovec([Bin | Rest], Size, Acc) ->
+    <<Part:Size/binary, Tail/binary>> = Bin,
+    Remaining = case Tail of
+                    <<>> -> Rest;
+                    _ -> [Tail | Rest]
+                end,
+    {lists:reverse([Part | Acc]), {iovec, Remaining}}.
+
+pending_data({iovec, Iovec}) -> Iovec;
+pending_data(Data) -> Data.
+
+%% Produces a keepalive frame. It is padded like data frames, so with padding
+%% enabled it is indistinguishable from data by length. May be called between the
+%% frames of a packet.
+-spec tx_tick(sender()) -> {iolist(), sender()}.
 tx_tick(S) ->
     emit(S, ?F_TICK, <<>>).
 
@@ -629,72 +650,71 @@ tx_data(S, Chunk, Flags) ->
     emit(S, Flags1, Payload).
 
 maybe_compress(#tx{compression = {zlib, MinSize}, zstream = Z}, Chunk, Flags)
-  when byte_size(Chunk) >= MinSize ->
-    Compressed = deflate_raw(Z, Chunk),
-    case byte_size(Compressed) < byte_size(Chunk) of
-        true -> {Flags bor ?F_COMP, Compressed};
+  when is_integer(MinSize) ->
+    ChunkSize = iolist_size(Chunk),
+    case ChunkSize >= MinSize of
+        true -> compress(Z, Chunk, ChunkSize, Flags);
         false -> {Flags, Chunk}
     end;
 maybe_compress(_, Chunk, Flags) ->
     {Flags, Chunk}.
 
+compress(Z, Chunk, ChunkSize, Flags) ->
+    Compressed = deflate_raw(Z, Chunk),
+    case iolist_size(Compressed) < ChunkSize of
+        true -> {Flags bor ?F_COMP, Compressed};
+        false -> {Flags, Chunk}
+    end.
+
 deflate_raw(Z, Data) ->
     ok = zlib:deflateReset(Z),
-    iolist_to_binary(zlib:deflate(Z, Data, finish)).
+    zlib:deflate(Z, Data, finish).
 
 emit(#tx{padding = Padding} = S, Flags0, Payload) ->
     {Flags1, Body} = pad(Padding, Flags0, Payload),
 
-    CipherLen = 1 + byte_size(Body) + ?TAG_LEN,
+    CipherLen = 1 + iolist_size(Body) + ?TAG_LEN,
 
     Now = rekey_clock(S),
-    Rekey = rekey_due(S, CipherLen, Now),
+    IsRekeyDue = rekey_due(S, CipherLen, Now),
 
-    Flags = case Rekey of
-                true  -> Flags1 bor ?F_REKEY;
-                false -> Flags1
+    Flags = case IsRekeyDue of
+                true  ->
+                    Flags1 bor ?F_REKEY;
+                false ->
+                    Flags1
             end,
 
-    {ok, CS1, Cipher} = encrypt(S#tx.cs, <<CipherLen:16>>, <<Flags, Body/binary>>),
-    Frame = [<<CipherLen:16>>, Cipher],
+    BinCipherLen = <<CipherLen:16>>,
+    {ok, CS1, Cipher} = enoise_cipher_state:encrypt_with_ad_iolist(S#tx.cs, BinCipherLen, [Flags, Body]),
+    Frame = [BinCipherLen, Cipher],
 
-    case Rekey of
+    case IsRekeyDue of
         true ->
-            {Frame, S#tx{cs = enoise_cipher_state:rekey(CS1), frames = 0, bytes = 0, t0 = Now}};
+            {Frame, S#tx{cs = enoise_cipher_state:rekey(CS1),
+                         frames = 0,
+                         bytes = 0,
+                         t0 = Now}};
         false ->
-            {Frame, S#tx{cs = CS1, frames = S#tx.frames + 1, bytes = S#tx.bytes + CipherLen}}
+            {Frame, S#tx{cs = CS1,
+                         frames = S#tx.frames + 1,
+                         bytes = S#tx.bytes + CipherLen}}
     end.
 
-%%% enoise only ever returns {ok, _, _} here; a failure would be a bug.
-encrypt(CS, AD, Plain) ->
-    {ok, _, _} = enoise_cipher_state:encrypt_with_ad(CS, AD, Plain).
+rekey_clock(#tx{has_ms = true, clock = Clock}) ->
+    Clock();
+rekey_clock(#tx{}) ->
+    0.
 
-%% Total plaintext is 1 (flags) + 2 (PadLen) + Payload + PadLen.
-pad(none, Flags, Payload) ->
-    {Flags, Payload};
-pad({bucket, N}, Flags, Payload) ->
-    Base = 3 + byte_size(Payload),
-    padded(Flags, Payload, ((Base + N - 1) div N) * N - Base);
-pad({fixed, N}, Flags, Payload) ->
-    padded(Flags, Payload, N - 3 - byte_size(Payload)).
-
-padded(Flags, Payload, PadLen) ->
-    {Flags bor ?F_PAD, <<PadLen:16, Payload/binary, 0:(PadLen * 8)>>}.
-
-rekey_clock(#tx{has_ms = true, clock = Clock}) -> Clock();
-rekey_clock(#tx{}) -> 0.
-
-rekey_due(#tx{frames_limit = FL, bytes_limit = BL, ms_limit = ML,
-              frames = Frames, bytes = Bytes, t0 = T0}, Len, Now) ->
+rekey_due(#tx{frames_limit = FL, bytes_limit = BL, ms_limit = ML, frames = Frames, bytes = Bytes, t0 = T0}, Len, Now) ->
     Frames + 1 >= FL orelse Bytes + Len >= BL orelse Now - T0 >= ML.
 
 %%
 %% Receiver
 %%
 
--doc """
-Initialize the reader from the controlling process.
-""".
+%% Initialize the reader from the controlling process.
+-spec rx_start(receiver()) -> receiver().
 rx_start(#rx{accept_compression = true}=Rx) ->
     Z = zlib:open(),
     ok = zlib:inflateInit(Z, -15),
@@ -702,51 +722,82 @@ rx_start(#rx{accept_compression = true}=Rx) ->
 rx_start(#rx{accept_compression = false}=Rx) ->
     Rx.
 
--doc """
-Feeds received bytes (any split of the byte stream) to the receiver.
-
-Returns the events completed by these bytes in order: `{packet, Iodata}` for
-each fully reassembled dist packet (pass it to one `dist_ctrl_put_data/2`
-call) and `tick`. Partial frames are buffered. Ticks may arrive between the
-frames of a packet.
-
-On any violation it returns `{error, Reason, Dead}`; the connection must then
-be closed. `Dead` refuses all further input with the same error (events decoded
-earlier in the same call are dropped). The state before the failing call must
-not be reused either: its cipher state is behind.
-
-`Reason`: `decrypt_failed` (bad tag, key or tampering), `bad_length` (cipher
-length below 17, or a data frame without payload), `reserved_flags`,
-`tick_with_payload` (also a tick with `last` or `comp`), `bad_padding` (PadLen
-too large or nonzero padding bytes), `compression_not_accepted`,
-`bad_compression` (invalid deflate data, or more than 65518 bytes inflated),
-`packet_too_large` (checked after every frame, while reassembling),
-`rekey_required` (`max_bytes_without_rekey` exceeded) and `rekey_unsupported`.
-""".
+%% Feeds received bytes (any split of the byte stream) to the receiver.
+%%
+%% Returns the events completed by these bytes in order: `{packet, Iodata}` for
+%% each fully reassembled dist packet (pass it to one `dist_ctrl_put_data/2`
+%% call) and `tick`. Partial frames are buffered. Ticks may arrive between the
+%% frames of a packet.
+%% 
+%% On any violation it returns `{error, Reason, Dead}`; the connection must then
+%% be closed. `Dead` refuses all further input with the same error (events decoded
+%% earlier in the same call are dropped). The state before the failing call must
+%% not be reused either: its cipher state is behind.
+%% 
+%% `Reason`: `decrypt_failed` (bad tag, key or tampering), `bad_length` (cipher
+%% length below 17, or a data frame without payload), `reserved_flags`,
+%% `tick_with_payload` (also a tick with `last` or `comp`), `bad_padding` (PadLen
+%% too large or nonzero padding bytes), `compression_not_accepted`,
+%% `bad_compression` (invalid deflate data, or more than 65518 bytes inflated),
+%% `packet_too_large` (checked after every frame, while reassembling),
+%% `rekey_required` (`max_bytes_without_rekey` exceeded) and `rekey_unsupported`.
 -spec rx_feed(receiver(), binary()) ->
           {ok, [rx_event()], receiver()} | {error, rx_error(), receiver()}.
 rx_feed(#rx{dead = {true, Reason}} = R, Bytes) when is_binary(Bytes) ->
     {error, Reason, R};
-rx_feed(#rx{buf = <<>>} = R, Bytes) when is_binary(Bytes) ->
-    rx_loop(R#rx{buf = Bytes}, []);
-rx_feed(#rx{buf = Buf} = R, Bytes) when is_binary(Bytes) ->
-    rx_loop(R#rx{buf = <<Buf/binary, Bytes/binary>>}, []).
+rx_feed(R, Bytes) when is_binary(Bytes) ->
+    rx_loop(R, Bytes, []).
 
-rx_loop(#rx{buf = <<Len:16, _/binary>>} = R, _Evs) when Len < ?MIN_CIPHER_LEN ->
+%%
+rx_loop(R, <<>>, Evs) ->
+    {ok, lists:reverse(Evs), R};
+rx_loop(#rx{expected = undefined, buf = [<<High>>]} = R, <<Low, Rest/binary>>, Evs) ->
+    rx_header(R#rx{buf = [], buf_size = 0}, (High bsl 8) bor Low, Rest, Evs);
+rx_loop(#rx{expected = undefined} = R, <<Len:16, Rest/binary>>, Evs) ->
+    rx_header(R, Len, Rest, Evs);
+rx_loop(#rx{expected = undefined} = R, <<Byte>>, Evs) ->
+    {ok, lists:reverse(Evs), R#rx{buf = [<<Byte>>], buf_size = 1}};
+rx_loop(#rx{expected = Len, buf = Buf, buf_size = Size} = R, Bytes, Evs) ->
+    Needed = Len - Size,
+    BytesSize = iolist_size(Bytes),
+    case BytesSize >= Needed of
+        true ->
+            <<Part:Needed/binary, Tail/binary>> = Bytes,
+            Cipher = case Buf of
+                         [] -> Part;
+                         _ -> iolist_to_binary(lists:reverse([Part | Buf]))
+                     end,
+            rx_complete(R#rx{buf = [], buf_size = 0, expected = undefined},
+                        Len, Cipher, Tail, Evs);
+        false ->
+            {ok, lists:reverse(Evs),
+             R#rx{buf = [Bytes | Buf], buf_size = Size + BytesSize}}
+    end.
+
+rx_header(R, Len, _Bytes, _Evs) when Len < ?MIN_CIPHER_LEN ->
     rx_fail(R, bad_length);
-rx_loop(#rx{buf = <<Len:16, Rest/binary>>} = R, Evs) when byte_size(Rest) >= Len ->
-    <<Cipher:Len/binary, Tail/binary>> = Rest,
-    case rx_frame(R#rx{buf = Tail}, Len, Cipher) of
-        {ok, none, R1} -> rx_loop(R1, Evs);
-        {ok, Ev, R1} -> rx_loop(R1, [Ev | Evs]);
+rx_header(R, Len, Bytes, Evs) when byte_size(Bytes) >= Len ->
+    <<Cipher:Len/binary, Tail/binary>> = Bytes,
+    rx_complete(R, Len, Cipher, Tail, Evs);
+rx_header(R, Len, <<>>, Evs) ->
+    {ok, lists:reverse(Evs), R#rx{expected = Len}};
+rx_header(R, Len, Bytes, Evs) ->
+    {ok, lists:reverse(Evs),
+     R#rx{buf = [Bytes], buf_size = iolist_size(Bytes), expected = Len}}.
+
+rx_complete(R, Len, Cipher, Tail, Evs) ->
+    case rx_frame(R, Len, Cipher) of
+        {ok, none, R1} -> rx_loop(R1, Tail, Evs);
+        {ok, Ev, R1} -> rx_loop(R1, Tail, [Ev | Evs]);
         {error, Reason} -> rx_fail(R, Reason)
-    end;
-rx_loop(R, Evs) ->
-    {ok, lists:reverse(Evs), R}.
+    end.
 
+%%
 rx_fail(R, Reason) ->
-    {error, Reason, R#rx{dead = {true, Reason}, buf = <<>>, acc = [], acc_size = 0}}.
+    {error, Reason, R#rx{dead = {true, Reason}, buf = [], buf_size = 0,
+                         expected = undefined, acc = [], acc_size = 0}}.
 
+%%
 rx_frame(#rx{max_bytes = Max, since = Since}, Len, _) when Max =/= infinity, Since + Len > Max ->
     {error, rekey_required};
 rx_frame(#rx{cs = CS} = R, Len, Cipher) ->
@@ -757,6 +808,7 @@ rx_frame(#rx{cs = CS} = R, Len, Cipher) ->
             {error, decrypt_failed}
     end.
 
+%%
 rx_flags(_, _, Flags, _) when Flags band ?F_RESERVED =/= 0 ->
     {error, reserved_flags};
 rx_flags(R, Len, Flags, Rest) ->
@@ -772,22 +824,7 @@ rx_flags(R, Len, Flags, Rest) ->
             Error
     end.
 
-unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
-    {ok, Rest};
-unpad(_, <<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
-    PayloadLen = byte_size(Body) - PadLen,
-    <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
-    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT
-         andalso Padding =:= <<0:(PadLen * 8)>>
-    of
-        true ->
-            {ok, Payload};
-        false ->
-            {error, bad_padding}
-    end;
-unpad(_, _) ->
-    {error, bad_padding}.
-
+%%
 rx_payload(R, Flags, Payload) when Flags band ?F_TICK =/= 0 ->
     case Payload =:= <<>> andalso Flags band (?F_LAST bor ?F_COMP) =:= 0 of
         true ->
@@ -803,17 +840,18 @@ rx_payload(R, Flags, Payload) when Flags band ?F_COMP =/= 0 ->
             {error, compression_not_accepted};
         true ->
             case inflate_raw(R#rx.zstream, Payload) of
-                {ok, Chunk} ->
-                    rx_data(R, Flags, Chunk);
+                {ok, Chunk, ChunkSize} ->
+                    rx_data(R, Flags, Chunk, ChunkSize);
                 {error, _} = Error ->
                     Error
             end
     end;
 rx_payload(R, Flags, Payload) ->
-    rx_data(R, Flags, Payload).
+    rx_data(R, Flags, Payload, byte_size(Payload)).
 
-rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk) ->
-    Size1 = Size + byte_size(Chunk),
+%%
+rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk, ChunkSize) ->
+    Size1 = Size + ChunkSize,
     if
         Size1 > Max ->
             {error, packet_too_large};
@@ -823,11 +861,59 @@ rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk) ->
             {ok, none, R#rx{acc = [Chunk | Acc], acc_size = Size1}}
     end.
 
+%
 rx_rekey(R, _Len, Flags, Ev) when Flags band ?F_REKEY =/= 0 ->
     CS = enoise_cipher_state:rekey(R#rx.cs),
     {ok, Ev, R#rx{cs = CS, since = 0}};
 rx_rekey(#rx{since = Since} = R, Len, _Flags, Ev) ->
     {ok, Ev, R#rx{since = Since + Len}}.
+
+%%
+%% Helpers
+%%
+
+to_string(V) when is_binary(V) -> unicode:characters_to_list(V);
+to_string(V) -> V.
+
+to_int(N) when is_integer(N) -> N;
+to_int(V) when is_list(V); is_binary(V) ->
+    case catch string:to_integer(to_string(V)) of
+        {N, ""} when is_integer(N) -> N;
+        _ -> error
+    end;
+to_int(_) -> error.
+
+%% Total plaintext is 1 (flags) + 2 (PadLen) + Payload + PadLen.
+-spec pad(padding(), flags(), iodata()) -> {flags(), iodata()}.
+pad(none, Flags, Payload) ->
+    {Flags, Payload};
+pad({bucket, N}, Flags, Payload) ->
+    Base = 3 + iolist_size(Payload),
+    padded(Flags, Payload, ((Base + N - 1) div N) * N - Base);
+pad({fixed, N}, Flags, Payload) ->
+    padded(Flags, Payload, N - 3 - iolist_size(Payload)).
+
+padded(Flags, Payload, PadLen) ->
+    {Flags bor ?F_PAD, [<<PadLen:16>>, Payload, <<0:(PadLen * 8)>>]}.
+
+
+-spec unpad(flags(), iodata()) -> {ok, iodata()} | {error, bad_padding}.
+unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
+    {ok, Rest};
+unpad(_, Rest) ->
+    unpad1(iolist_to_binary(Rest)).
+
+unpad1(<<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
+    PayloadLen = byte_size(Body) - PadLen,
+    <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
+    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT andalso Padding =:= <<0:(PadLen * 8)>> of
+        true ->
+            {ok, Payload};
+        false ->
+            {error, bad_padding}
+    end;
+unpad1(_) ->
+    {error, bad_padding}.
 
 inflate_raw(Z, Data) ->
     try
@@ -840,7 +926,7 @@ inflate_raw(Z, Data) ->
             OutSize =:= 0 ->
                 {error, bad_compression};
             true ->
-                {ok, iolist_to_binary(Out)}
+                {ok, Out, OutSize}
         end
     catch
         error:_ -> {error, bad_compression}

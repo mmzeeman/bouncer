@@ -32,10 +32,12 @@
 -define(DRAIN_MAX_PACKETS, 64).
 -define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
 
+-spec listen(atom() | binary() | string()) -> term().
 listen(Name) ->
     {ok, Host} = inet:gethostname(),
     listen(Name, Host).
 
+-spec listen(atom() | binary() | string(), atom() | binary() | string()) -> term().
 listen(Name, Host) ->
     NodeName = node_name(Name, Host),
     FlagSettings = argument_settings(),
@@ -58,14 +60,17 @@ listen(Name, Host) ->
             Error
     end.
 
+-spec accept(term()) -> term().
 accept(Listen) ->
     inet_tcp_dist:accept(Listen).
 
+-spec accept_connection(pid(), term(), atom(), term(), term()) -> term().
 accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     spawn_opt(?MODULE, do_accept,
               [self(), AcceptPid, Socket, MyNode, Allowed, SetupTime],
               dist_util:net_ticker_spawn_options()).
 
+-spec do_accept(pid(), pid(), term(), atom(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     receive
         {AcceptPid, controller} ->
@@ -94,9 +99,13 @@ accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, #{ keys := Keys, no
             stop_connection(MyNode, {noise_handshake, Reason})
     end.
 
+-spec setup(atom(), atom(), atom(), boolean(), term()) -> term().
 setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    spawn_opt(?MODULE, do_setup, [self(), Node, Type, MyNode, LongOrShortNames, SetupTime], dist_util:net_ticker_spawn_options()).
+    spawn_opt(?MODULE, do_setup,
+              [self(), Node, Type, MyNode, LongOrShortNames, SetupTime],
+              dist_util:net_ticker_spawn_options()).
 
+-spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     case settings() of
         {ok, Settings} ->
@@ -178,12 +187,15 @@ initialize_controller(Socket, Result, Settings, Role) ->
     try
         #{send := Send, recv := Recv} = Result,
         #{sender_policy := SP, receiver_policy := RP} = Settings,
+
         Sender = bouncer_protocol:new_sender(Send, SP),
         Receiver = bouncer_protocol:new_receiver(Recv, RP),
+
         Ref = make_ref(),
-        Controller = spawn_link(?MODULE, controller_init,
-                                [self(), Ref, Socket, Receiver, Sender,
-                                 {Role, maps:get(node_name, Settings)}]),
+        Controller = spawn_opt(?MODULE, controller_init,
+                               [self(), Ref, Socket, Receiver, Sender, {Role, maps:get(node_name, Settings)}],
+                               [link, {priority, max}, {message_queue_data, off_heap}]),
+
         receive
             {Ref, {ok, Controller, Reader}} ->
                 case gen_tcp:controlling_process(Socket, Reader) of
@@ -201,13 +213,21 @@ initialize_controller(Socket, Result, Settings, Role) ->
         error:ControllerReason -> {error, ControllerReason}
     end.
 
+-spec controller_init(pid(), reference(), inet:socket(), bouncer_protocol:receiver(),
+                      bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
-    Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
+
+    Reader = spawn_opt(?MODULE, start_reader,
+                       [Socket, Receiver, Role, OwnName],
+                       [link, {priority, max}, {message_queue_data, off_heap}]),
+
     Sender1 = bouncer_protocol:tx_start(Sender),
     Parent ! {Ref, {ok, self(), Reader}},
     controller_loop(Socket, OwnName, Reader, Sender1, undefined).
 
+-spec controller_loop(inet:socket(), binary(), pid(), bouncer_protocol:sender(),
+                      undefined | erlang:dist_handle()) -> no_return().
 controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
     receive
         {send_packet, From, Ref, Packet} ->
@@ -236,7 +256,6 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
         {handshake_complete, From, Ref, Reader, DHandle} ->
             ok = erlang:dist_ctrl_input_handler(DHandle, Reader),
             Reader ! {data_phase, DHandle},
-            process_flag(priority, normal),
             erlang:dist_ctrl_get_data_notification(DHandle),
             From ! {Ref, ok},
             controller_loop(Socket, OwnName, Reader, Sender, DHandle);
@@ -265,26 +284,107 @@ controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
             exit({controller_child_exit, Reason})
     end.
 
+
 controller_drain(Socket, OwnName, Reader, Sender, DHandle, Count) ->
+    drain_batch(Socket, OwnName, Reader, Sender, DHandle, [], 0, Count).
+
+%% Pending: encrypted frames not yet written, in reverse order.
+%% PendingBytes: total byte size of Pending.
+drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Count) ->
     case erlang:dist_ctrl_get_data(DHandle) of
         none ->
+            %% Re-arm the VM notification first; it may queue more data
+            %% while we are writing the batch to the socket.
             erlang:dist_ctrl_get_data_notification(DHandle),
-            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
-        Packet ->
-            case write_packet(Socket, Sender, Packet) of
-                {ok, Sender1} when Count + 1 >= ?DRAIN_MAX_PACKETS ->
-                    self() ! dist_data,
-                    controller_loop(Socket, OwnName, Reader, Sender1, DHandle);
-                {ok, Sender1} ->
-                    controller_drain(Socket, OwnName, Reader, Sender1,
-                                     DHandle, Count + 1);
+            case send_frames(Socket, Pending) of
+                ok ->
+                    controller_loop(Socket, OwnName, Reader, Sender, DHandle);
                 {error, Reason} ->
-                    log_io_error(OwnName, {send, Reason}),
-                    gen_tcp:close(Socket),
-                    exit({send_error, Reason})
+                    drain_send_failed(Socket, OwnName, Reason)
+            end;
+        Packet ->
+            case tx_frames(Socket, Sender, Packet, Pending, PendingBytes) of
+                {ok, Sender1, Pending1, PendingBytes1}
+                  when PendingBytes1 >= ?SEND_BATCH_MAX ->
+                    %% Byte cap reached: write the batch out and keep draining.
+                    case send_frames(Socket, Pending1) of
+                        ok ->
+                            drain_batch(Socket, OwnName, Reader, Sender1,
+                                        DHandle, [], 0, Count + 1);
+                        {error, Reason} ->
+                            drain_send_failed(Socket, OwnName, Reason)
+                    end;
+                {ok, Sender1, Pending1, _}
+                  when Count + 1 >= ?DRAIN_MAX_PACKETS ->
+                    %% Packet cap reached: flush, then yield to other
+                    %% messages (getstat, tick, EXIT) exactly as before,
+                    %% and continue with a fresh drain via self() ! dist_data.
+                    case send_frames(Socket, Pending1) of
+                        ok ->
+                            self() ! dist_data,
+                            controller_loop(Socket, OwnName, Reader,
+                                            Sender1, DHandle);
+                        {error, Reason} ->
+                            drain_send_failed(Socket, OwnName, Reason)
+                    end;
+                {ok, Sender1, Pending1, PendingBytes1} ->
+                    drain_batch(Socket, OwnName, Reader, Sender1, DHandle,
+                                Pending1, PendingBytes1, Count + 1);
+                {error, Reason} ->
+                    drain_send_failed(Socket, OwnName, Reason)
             end
     end.
 
+-spec write_packet(inet:socket(), bouncer_protocol:sender(), iodata()) ->
+          {ok, bouncer_protocol:sender()} | {error, term()}.
+write_packet(Socket, Sender, Packet) ->
+    case tx_frames(Socket, Sender, Packet, [], 0) of
+        {ok, Sender1, Pending, _PendingBytes} ->
+            case send_frames(Socket, Pending) of
+                ok ->
+                    {ok, Sender1};
+                {error, Reason} ->
+                    {error, Reason}
+            end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+tx_frames(Socket, Sender, Packet, Pending, PendingBytes) ->
+    try bouncer_protocol:tx_packet(Packet) of
+        Tx ->
+            tx_next_frames(Socket, Sender, Tx, Pending, PendingBytes)
+    catch
+        error:Reason ->
+            {error, Reason}
+    end.
+
+tx_next_frames(Socket, Sender, Tx, Acc, Bytes) ->
+    case bouncer_protocol:tx_next(Sender, Tx) of
+        {Frame, Sender1, more, Tx1} ->
+            Acc1 = [Frame | Acc],
+            Bytes1 = Bytes + erlang:iolist_size(Frame),
+            case Bytes1 >= ?SEND_BATCH_MAX of
+                true ->
+                    case send_frames(Socket, Acc1) of
+                        ok ->
+                            tx_next_frames(Socket, Sender1, Tx1, [], 0);
+                        {error, Reason} ->
+                            {error, Reason}
+                    end;
+                false ->
+                    tx_next_frames(Socket, Sender1, Tx1, Acc1, Bytes1)
+            end;
+        {Frame, Sender1, done} ->
+            {ok, Sender1, [Frame | Acc], Bytes + erlang:iolist_size(Frame)}
+    end.
+
+drain_send_failed(Socket, OwnName, Reason) ->
+    log_io_error(OwnName, {send, Reason}),
+    gen_tcp:close(Socket),
+    exit({send_error, Reason}).
+
+-spec start_reader(inet:socket(), bouncer_protocol:receiver(), term(), binary()) -> term().
 start_reader(Socket, Receiver0, Role, OwnName) ->
     Receiver = bouncer_protocol:rx_start(Receiver0),
     reader_loop(Socket, Receiver, Role, OwnName, []).
@@ -319,8 +419,19 @@ read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout, Events) ->
                 {error, Reason} ->
                     log_io_error(OwnName, {'receive', Reason}),
                     From ! {Ref, {error, Reason}},
+                    wait_for_caller(From),
                     exit({receive_error, Reason})
             end
+    end.
+
+%% Exiting at once would propagate through the links and kill the caller
+%% before it has handled the error, so it could not log the failure.
+wait_for_caller(From) ->
+    Monitor = erlang:monitor(process, From),
+    receive
+        {'DOWN', Monitor, process, From, _} -> ok
+    after 5000 ->
+            erlang:demonitor(Monitor, [flush])
     end.
 
 take_packet([]) ->
@@ -330,6 +441,8 @@ take_packet([tick | Rest]) ->
 take_packet([{packet, Data} | Rest]) ->
     {packet, iolist_to_binary(Data), Rest}.
 
+-spec receive_data(inet:socket(), bouncer_protocol:receiver(), erlang:dist_handle(),
+                   binary()) -> term().
 receive_data(Socket, Receiver, DHandle, OwnName) ->
     case gen_tcp:recv(Socket, 0, infinity) of
         {ok, Bytes} ->
@@ -358,39 +471,8 @@ deliver_events([tick | Rest], DHandle) ->
     erlang:dist_ctrl_put_data(DHandle, <<>>),
     deliver_events(Rest, DHandle).
 
-
-write_packet(Socket, Sender, Packet) ->
-    try bouncer_protocol:tx_packet(Packet) of
-        Pending -> write_packet_frames(Socket, Sender, Pending, [], 0)
-    catch
-        error:Reason -> {error, Reason}
-    end.
-
-write_packet_frames(Socket, Sender, Pending, Acc, Size) ->
-    case bouncer_protocol:tx_next(Sender, Pending) of
-        {Frame, Sender1, more, Pending1} ->
-            Acc1 = [Frame | Acc],
-            Size1 = Size + erlang:iolist_size(Frame),
-            case Size1 >= ?SEND_BATCH_MAX of
-                true ->
-                    case send_frames(Socket, Acc1) of
-                        ok ->
-                            write_packet_frames(Socket, Sender1, Pending1, [], 0);
-                        {error, Reason} ->
-                            {error, Reason}
-                    end;
-                false ->
-                    write_packet_frames(Socket, Sender1, Pending1, Acc1, Size1)
-            end;
-        {Frame, Sender1, done} ->
-            case send_frames(Socket, [Frame | Acc]) of
-                ok ->
-                    {ok, Sender1};
-                {error, Reason} ->
-                    {error, Reason}
-            end
-    end.
-
+send_frames(_Socket, []) ->
+    ok;
 send_frames(Socket, [Frame]) ->
     gen_tcp:send(Socket, Frame);
 send_frames(Socket, Frames) ->
@@ -472,10 +554,12 @@ settings_value() ->
     {ok, Settings} = settings(),
     Settings.
 
+-spec tick(pid()) -> ok.
 tick(Controller) when is_pid(Controller) ->
     Controller ! tick,
     ok.
 
+-spec getstat(pid()) -> term().
 getstat(Controller) when is_pid(Controller) ->
     Ref = make_ref(),
     Controller ! {getstat, self(), Ref},
@@ -512,15 +596,19 @@ address_fun(Socket) ->
             end
     end.
 
+-spec close(term()) -> term().
 close(Listen) ->
     inet_tcp_dist:close(Listen).
 
+-spec select(atom()) -> term().
 select(Node) ->
     inet_tcp_dist:select(Node).
 
+-spec address() -> term().
 address() ->
     inet_tcp_dist:address().
 
+-spec is_node_name(term()) -> boolean().
 is_node_name(Node) ->
     inet_tcp_dist:is_node_name(Node).
 
@@ -557,6 +645,9 @@ socket_options(Settings) ->
      {packet, 0},
      {active, false},
      {nodelay, true},
+     {sndbuf, 262144},
+     {recbuf, 262144},
+     {buffer, 262144},
      {send_timeout, maps:get(send_timeout_ms, Settings)},
      {send_timeout_close, true}].
 
