@@ -338,8 +338,19 @@ read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout, Events) ->
                 {error, Reason} ->
                     log_io_error(OwnName, {'receive', Reason}),
                     From ! {Ref, {error, Reason}},
+                    wait_for_caller(From),
                     exit({receive_error, Reason})
             end
+    end.
+
+%% Exiting at once would propagate through the links and kill the caller
+%% before it has handled the error, so it could not log the failure.
+wait_for_caller(From) ->
+    Monitor = erlang:monitor(process, From),
+    receive
+        {'DOWN', Monitor, process, From, _} -> ok
+    after 5000 ->
+            erlang:demonitor(Monitor, [flush])
     end.
 
 take_packet([]) ->
