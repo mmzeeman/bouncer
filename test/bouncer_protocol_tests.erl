@@ -143,7 +143,7 @@ unpad_iodata_test() ->
     ?assertEqual({ok, <<"hello">>}, bouncer_protocol:unpad(8, Rest)),
     ?assertEqual({error, bad_padding},
                  bouncer_protocol:unpad(8, [<<4:16>>, <<"hello">>, <<1, 0, 0, 0>>])),
-    ?assertEqual({error, bad_padding}, bouncer_protocol:unpad(8, [<<4:16>>, 256])).
+    ?assertError(badarg, bouncer_protocol:unpad(8, [<<4:16>>, 256])).
 
 limits_match_enoise_test_() ->
     [?_test(begin

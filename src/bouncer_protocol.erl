@@ -831,29 +831,25 @@ padded(Flags, Payload, PadLen) ->
     {Flags bor ?F_PAD, [<<PadLen:16>>, Payload, <<0:(PadLen * 8)>>]}.
 
 
--spec unpad(flags(), iodata()) -> {ok, iodata()} | {error, bad_padding}.
+-spec unpad(flags(), iodata()) -> {ok, binary()} | {error, bad_padding}.
 unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
     {ok, Rest};
-unpad(_, Rest) ->
-    try iolist_to_binary(Rest) of
-        <<PadLen:16, Body/binary>> when PadLen =< byte_size(Body) ->
-            PayloadLen = byte_size(Body) - PadLen,
-            <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
-            case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT
-                 andalso Padding =:= <<0:(PadLen * 8)>>
-            of
-                true ->
-                    {ok, Payload};
-                false ->
-                    {error, bad_padding}
-            end;
-        _ ->
-            {error, bad_padding}
-    catch
-        error:badarg ->
-            {error, bad_padding}
-    end.
+unpad(_, Rest) when is_binary(Rest) ->
+    unpad1(Rest);
+unpad(_, Rest) when is_list(Rest) ->
+    unpad1(iolist_to_binary(Rest)).
 
+unpad1(<<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
+    PayloadLen = byte_size(Body) - PadLen,
+    <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
+    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT andalso Padding =:= <<0:(PadLen * 8)>> of
+        true ->
+            {ok, Payload};
+        false ->
+            {error, bad_padding}
+    end;
+unpad1(B) when is_binary(B) ->
+    {error, bad_padding}.
 
 inflate_raw(Z, Data) ->
     try
