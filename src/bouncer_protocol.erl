@@ -305,7 +305,7 @@ limits() ->
 }).
 
 -record(pending, {
-    rest :: binary()
+    rest :: iodata()
 }).
 
 -record(rx, {
@@ -588,9 +588,9 @@ tx_start(#tx{ compression = none }=Tx) ->
 %% is a tick, use `tx_tick/1`); an empty packet raises `badarg`.
 -spec tx_packet(iodata()) -> pending().
 tx_packet(Packet) ->
-    case iolist_to_binary(Packet) of
-        <<>> -> erlang:error(badarg);
-        Bin -> #pending{rest = Bin}
+    case iolist_size(Packet) of
+        0 -> erlang:error(badarg);
+        _ -> #pending{rest = Packet}
     end.
 
 %% Produces one frame of the packet. The caller may do other work (including
@@ -601,13 +601,17 @@ tx_packet(Packet) ->
 %% uses the new key.
 -spec tx_next(sender(), pending()) ->
           {iolist(), sender(), more, pending()} | {iolist(), sender(), done}.
-tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest}) when byte_size(Rest) > Chunk ->
-    <<Part:Chunk/binary, Tail/binary>> = Rest,
-    {Frame, S1} = tx_data(S, Part, 0),
-    {Frame, S1, more, #pending{rest = Tail}};
-tx_next(S, #pending{rest = Rest}) ->
-    {Frame, S1} = tx_data(S, Rest, ?F_LAST),
-    {Frame, S1, done}.
+tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest}) ->
+    case iolist_size(Rest) > Chunk of
+        true ->
+            %% Only packets larger than one chunk are flattened; the tail stays a sub-binary.
+            <<Part:Chunk/binary, Tail/binary>> = iolist_to_binary(Rest),
+            {Frame, S1} = tx_data(S, Part, 0),
+            {Frame, S1, more, #pending{rest = Tail}};
+        false ->
+            {Frame, S1} = tx_data(S, Rest, ?F_LAST),
+            {Frame, S1, done}
+    end.
 
 %% Produces a keepalive frame. It is padded like data frames, so with padding
 %% enabled it is indistinguishable from data by length. May be called between the
@@ -621,14 +625,21 @@ tx_data(S, Chunk, Flags) ->
     emit(S, Flags1, Payload).
 
 maybe_compress(#tx{compression = {zlib, MinSize}, zstream = Z}, Chunk, Flags)
-  when byte_size(Chunk) >= MinSize ->
-    Compressed = deflate_raw(Z, Chunk),
-    case iolist_size(Compressed) < byte_size(Chunk) of
-        true -> {Flags bor ?F_COMP, Compressed};
+  when is_integer(MinSize) ->
+    ChunkSize = iolist_size(Chunk),
+    case ChunkSize >= MinSize of
+        true -> compress(Z, Chunk, ChunkSize, Flags);
         false -> {Flags, Chunk}
     end;
 maybe_compress(_, Chunk, Flags) ->
     {Flags, Chunk}.
+
+compress(Z, Chunk, ChunkSize, Flags) ->
+    Compressed = deflate_raw(Z, Chunk),
+    case iolist_size(Compressed) < ChunkSize of
+        true -> {Flags bor ?F_COMP, Compressed};
+        false -> {Flags, Chunk}
+    end.
 
 deflate_raw(Z, Data) ->
     ok = zlib:deflateReset(Z),
