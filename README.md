@@ -506,14 +506,17 @@ maps; invalid values are rejected with an error naming the allowed values).
 
 | Setting | Values | Default | Flag example |
 |---|---|---|---|
-| `chunk_size` | 1..65518 | 16384 | `-bouncer chunk_size 16384` |
-| `padding` | `none`, `{bucket, N}` (round the plaintext up to a multiple of N, N <= 65519), `{fixed, N}` (every frame plaintext is N bytes, 4 <= N <= 65519; chunks are capped at N-3) | `none` | `-bouncer padding bucket:512` |
+| `chunk_size` | 1..65518 | 65518 | `-bouncer chunk_size 16384` |
+| `padding` | `none`, `{bucket, N}` (round the plaintext up to a multiple of N, N <= 65519), `{fixed, N}` (every frame plaintext is N bytes, 4 <= N <= 65519; chunks are capped at N-3) | `{bucket, 1400}` | `-bouncer padding bucket:512` |
 | `compression` | `none`, `{zlib, MinSize}` (chunks of at least MinSize bytes, only used if strictly smaller) | `none` | `-bouncer compression zlib:256` |
 | `rekey_after` | `never` or any of `{frames, N}`, `{bytes, B}`, `{ms, T}` | `[{bytes, 1073741824}]` | `-bouncer rekey_after bytes:1073741824,ms:3600000` |
 | `max_packet` (receiver) | bytes of one reassembled packet; checked while reassembling | 67108864 | `-bouncer max_packet N` |
 | `accept_compression` (receiver) | `true`/`false` | `false` | `-bouncer accept_compression true` |
 | `max_bytes_without_rekey` (receiver) | integer or `infinity` | `infinity` | |
 
+Padding limits the effective chunk size to `N - 3` for fixed padding and
+`(65519 div N) * N - 3` for bucket padding, if smaller than `chunk_size`.
+With the default bucket of 1400, the effective maximum is 64397 bytes.
 Padded frames are always accepted. Ticks are padded like data. Inflation is
 incremental with a hard 65518 byte limit. Keep compression off when
 attacker-chosen data is mixed with secrets (CRIME/BREACH).

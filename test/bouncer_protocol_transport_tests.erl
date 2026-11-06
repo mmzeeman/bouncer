@@ -254,7 +254,7 @@ roundtrip_chunk_size_extremes_test_() ->
 chunk_size_and_last_flag_test_() ->
     [fun() ->
         {Tx, _} = handshake(Name),
-        S = new_sender(Tx, #{chunk_size => 1000}),
+        S = new_sender(Tx, #{chunk_size => 1000, padding => none}),
         {Frames, _} = send(S, data(random, 4500)),
         ?assertEqual(5, length(Frames)),
         Flags = stream_flags(Tx, bin(Frames)),
@@ -262,11 +262,26 @@ chunk_size_and_last_flag_test_() ->
         ?assertEqual([1017, 1017, 1017, 1017, 517], frame_lens(bin(Frames)))
     end || Name <- ?SUITES].
 
-default_chunk_size_is_16384_test() ->
-    {Tx, _} = handshake(?AESGCM),
-    S = new_sender(Tx, #{}),
-    {Frames, _} = send(S, data(random, 16385)),
-    ?assertEqual([16384 + 17, 1 + 17], frame_lens(bin(Frames))).
+default_chunk_size_and_padding_test() ->
+    {Tx, Rx} = handshake(?AESGCM),
+    S = ?P:tx_start(?P:new_sender(Tx, #{})),
+    R = new_receiver(Rx, #{}),
+    Packet = data(random, 64398),
+    {Frames, S1} = send(S, Packet),
+    {Tick, _} = tick(S1),
+    Wire = bin([Frames, Tick]),
+    ?assertEqual([64400 + 16, 1400 + 16, 1400 + 16], frame_lens(Wire)),
+    ?assertEqual([?PAD, ?LAST bor ?PAD, ?TICK bor ?PAD], stream_flags(Tx, Wire)),
+    ?assertEqual([{packet, Packet}, tick], element(1, feed(R, Wire))).
+
+default_chunk_size_without_padding_test() ->
+    {Tx, Rx} = handshake(?AESGCM),
+    S = ?P:tx_start(?P:new_sender(Tx, #{padding => none})),
+    R = new_receiver(Rx, #{}),
+    Packet = data(random, 65519),
+    {Frames, _} = send(S, Packet),
+    ?assertEqual([65518 + 17, 1 + 17], frame_lens(bin(Frames))),
+    ?assertEqual([{packet, Packet}], element(1, feed(R, bin(Frames)))).
 
 single_chunk_packet_has_last_test() ->
     {Tx, _} = handshake(?AESGCM),
@@ -353,7 +368,7 @@ fragmented_invalid_header_test() ->
     ?assertMatch({error, bad_length, _}, ?P:rx_feed(Dead, <<0, 17>>)).
 
 fragmented_max_frame_test() ->
-    {S, R} = pair(?AESGCM, #{chunk_size => 65518}, #{}),
+    {S, R} = pair(?AESGCM, #{chunk_size => 65518, padding => none}, #{}),
     Packet = data(random, 65518),
     {[Frame], _} = send(S, Packet),
     <<First:1/binary, Second:1/binary, Body/binary>> = Frame,
@@ -535,7 +550,7 @@ max_unpadded_payload_test() ->
 compression_sets_flag_and_shrinks_test_() ->
     [fun() ->
         {Tx, Rx} = handshake(Name),
-        S = new_sender(Tx, #{compression => {zlib, 256}}),
+        S = new_sender(Tx, #{compression => {zlib, 256}, padding => none}),
         R = new_receiver(Rx, #{accept_compression => true}),
         Packet = data(compressible, 16384),
         {Frames, _} = send(S, Packet),
@@ -547,7 +562,7 @@ compression_sets_flag_and_shrinks_test_() ->
 
 incompressible_is_sent_plain_test() ->
     {Tx, Rx} = handshake(?AESGCM),
-    S = new_sender(Tx, #{compression => {zlib, 1}}),
+    S = new_sender(Tx, #{compression => {zlib, 1}, padding => none}),
     Packet = data(random, 16384),
     {[Frame], _} = send(S, Packet),
     ?assertEqual([?LAST], stream_flags(Tx, Frame)),
@@ -557,7 +572,7 @@ incompressible_is_sent_plain_test() ->
 
 min_size_is_respected_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000}),
+    S = new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000, padding => none}),
     {F255, S1} = send(S, data(compressible, 255)),
     {F256, S2} = send(S1, data(compressible, 256)),
     {F2100, _} = send(S2, data(compressible, 2100)),
@@ -568,7 +583,7 @@ min_size_is_respected_test() ->
 
 short_last_chunk_below_min_is_plain_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000}),
+    S = new_sender(Tx, #{compression => {zlib, 256}, chunk_size => 1000, padding => none}),
     {Frames, _} = send(S, data(compressible, 2100)),
     ?assertEqual([?COMP, ?COMP, ?LAST], stream_flags(Tx, bin(Frames))).
 
@@ -689,7 +704,7 @@ rekey_continues_nonce_and_matches_otp_crypto_test_() ->
         ?assertEqual(32, byte_size(K2)),
         ?assertNotEqual(K, K2),
         Total = 5,
-        S = new_sender(Tx, #{rekey_after => [{frames, 3}]}),
+        S = new_sender(Tx, #{rekey_after => [{frames, 3}], padding => none}),
         {Frames, _} = lists:foldl(fun(I, {Acc, SAcc}) ->
                                           {[F], S1} = send(SAcc, <<"packet-", (integer_to_binary(I))/binary>>),
                                           {Acc ++ [F], S1}
@@ -713,7 +728,7 @@ rekey_continues_nonce_and_matches_otp_crypto_test_() ->
 rekey_frame_uses_old_key_and_next_needs_new_key_test_() ->
     [{Name, fun() ->
         {Tx, _} = handshake(Name),
-        S = new_sender(Tx, #{rekey_after => [{frames, 1}]}),
+        S = new_sender(Tx, #{rekey_after => [{frames, 1}], padding => none}),
         {[F1], S1} = send(S, <<"one">>),
         {[F2], _} = send(S1, <<"two">>),
         {ok, Old, Flags, _} = raw_decrypt(Tx, F1),
@@ -737,14 +752,15 @@ rekey_flag_stripped_by_proxy_test_() ->
     end || Name <- ?SUITES].
 
 rekey_required_when_peer_never_rekeys_test() ->
-    {S, R} = pair(?AESGCM, #{rekey_after => never}, #{max_bytes_without_rekey => 1000}),
+    {S, R} = pair(?AESGCM, #{rekey_after => never, padding => none},
+                  #{max_bytes_without_rekey => 1000}),
     {F1, S1} = send(S, data(random, 500)),
     {F2, _} = send(S1, data(random, 500)),
     {ok, [{packet, _}], R1} = ?P:rx_feed(R, bin(F1)),
     ?assertMatch({error, rekey_required, _}, ?P:rx_feed(R1, bin(F2))).
 
 max_bytes_without_rekey_met_by_rekeying_sender_test() ->
-    {S, R} = pair(?AESGCM, #{rekey_after => [{bytes, 300}], chunk_size => 100},
+    {S, R} = pair(?AESGCM, #{rekey_after => [{bytes, 300}], chunk_size => 100, padding => none},
                   #{max_bytes_without_rekey => 1000}),
     Packets = [data(random, 250) || _ <- lists:seq(1, 40)],
     {Wire, _} = lists:foldl(fun(P, {W, SAcc}) ->
@@ -756,7 +772,7 @@ max_bytes_without_rekey_met_by_rekeying_sender_test() ->
 
 rekey_frames_limit_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 10}),
+    S = new_sender(Tx, #{rekey_after => [{frames, 3}], chunk_size => 10, padding => none}),
     {Wire, _} = send(S, data(random, 100)),
     Flags = stream_flags(Tx, bin(Wire)),
     ?assertEqual(10, length(Flags)),
@@ -767,7 +783,7 @@ rekey_frames_limit_test() ->
 rekey_bytes_limit_test() ->
     {Tx, _} = handshake(?AESGCM),
     %% every tick frame is 17 bytes of ciphertext
-    S = new_sender(Tx, #{rekey_after => [{bytes, 17 * 4}]}),
+    S = new_sender(Tx, #{rekey_after => [{bytes, 17 * 4}], padding => none}),
     {Wire, _} = lists:foldl(fun(_, {W, SAcc}) ->
                                     {T, S1} = tick(SAcc),
                                     {[W, T], S1}
@@ -795,7 +811,8 @@ rekey_ms_limit_with_injected_clock_test() ->
 
 rekey_any_limit_triggers_test() ->
     {Tx, _} = handshake(?AESGCM),
-    S = new_sender(Tx, #{rekey_after => [{frames, 100}, {bytes, 17 * 2}, {ms, 100000}]}),
+    S = new_sender(Tx, #{rekey_after => [{frames, 100}, {bytes, 17 * 2}, {ms, 100000}],
+                         padding => none}),
     {A, S1} = tick(S),
     {B, _} = tick(S1),
     ?assertEqual([?TICK, ?TICK bor ?REKEY], stream_flags(Tx, bin([A, B]))).
@@ -1053,7 +1070,7 @@ finish(S, Pending, Acc) ->
 
 sender_policy_defaults_test() ->
     {ok, P} = ?P:sender_policy(#{}),
-    ?assertMatch(#{chunk_size := 16384, padding := none, compression := none,
+    ?assertMatch(#{chunk_size := 65518, padding := {bucket, 1400}, compression := none,
                    rekey_after := [{bytes, 1073741824}]}, P),
     ?assertEqual({ok, P}, ?P:sender_policy([#{}, #{}])).
 
@@ -1156,8 +1173,13 @@ strip_comments_and_docs(Bin) ->
 %% Helpers
 %%
 
+%% Pin test policies so unrelated default changes do not alter frame boundaries.
 new_sender(A, B) ->
-    ?P:tx_start(?P:new_sender(A, B)).
+    Policy = maps:merge(#{chunk_size => 16384, padding => none,
+                          compression => none, rekey_after => never}, B),
+    ?P:tx_start(?P:new_sender(A, Policy)).
 
 new_receiver(A, B) ->
-    ?P:rx_start(?P:new_receiver(A, B)).
+    Policy = maps:merge(#{max_packet => 67108864, accept_compression => false,
+                          max_bytes_without_rekey => infinity}, B),
+    ?P:rx_start(?P:new_receiver(A, Policy)).
