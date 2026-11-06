@@ -600,7 +600,7 @@ tx_packet(Packet) ->
 %% of the `rekey_after` limits has been reached; the returned sender then already
 %% uses the new key.
 -spec tx_next(sender(), pending()) ->
-          {iodata(), sender(), more, pending()} | {iodata(), sender(), done}.
+          {iolist(), sender(), more, pending()} | {iolist(), sender(), done}.
 tx_next(#tx{chunk = Chunk} = S, #pending{rest = Rest}) when byte_size(Rest) > Chunk ->
     <<Part:Chunk/binary, Tail/binary>> = Rest,
     {Frame, S1} = tx_data(S, Part, 0),
@@ -612,7 +612,7 @@ tx_next(S, #pending{rest = Rest}) ->
 %% Produces a keepalive frame. It is padded like data frames, so with padding
 %% enabled it is indistinguishable from data by length. May be called between the
 %% frames of a packet.
--spec tx_tick(sender()) -> {iodata(), sender()}.
+-spec tx_tick(sender()) -> {iolist(), sender()}.
 tx_tick(S) ->
     emit(S, ?F_TICK, <<>>).
 
