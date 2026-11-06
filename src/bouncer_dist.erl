@@ -32,10 +32,12 @@
 -define(DRAIN_MAX_PACKETS, 64).
 -define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
 
+-spec listen(atom() | binary() | string()) -> term().
 listen(Name) ->
     {ok, Host} = inet:gethostname(),
     listen(Name, Host).
 
+-spec listen(atom() | binary() | string(), atom() | binary() | string()) -> term().
 listen(Name, Host) ->
     NodeName = node_name(Name, Host),
     FlagSettings = argument_settings(),
@@ -58,14 +60,17 @@ listen(Name, Host) ->
             Error
     end.
 
+-spec accept(term()) -> term().
 accept(Listen) ->
     inet_tcp_dist:accept(Listen).
 
+-spec accept_connection(pid(), term(), atom(), term(), term()) -> term().
 accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     spawn_opt(?MODULE, do_accept,
               [self(), AcceptPid, Socket, MyNode, Allowed, SetupTime],
               dist_util:net_ticker_spawn_options()).
 
+-spec do_accept(pid(), pid(), term(), atom(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     receive
         {AcceptPid, controller} ->
@@ -94,9 +99,11 @@ accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, #{ keys := Keys, no
             stop_connection(MyNode, {noise_handshake, Reason})
     end.
 
+-spec setup(atom(), atom(), atom(), boolean(), term()) -> term().
 setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     spawn_opt(?MODULE, do_setup, [self(), Node, Type, MyNode, LongOrShortNames, SetupTime], dist_util:net_ticker_spawn_options()).
 
+-spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     case settings() of
         {ok, Settings} ->
@@ -204,7 +211,8 @@ initialize_controller(Socket, Result, Settings, Role) ->
         error:ControllerReason -> {error, ControllerReason}
     end.
 
--spec controller_init(pid(), reference(), socket:socket(), bouncer_protocol:receiver(), bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
+-spec controller_init(pid(), reference(), inet:socket(), bouncer_protocol:receiver(),
+                      bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
     Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
@@ -212,7 +220,8 @@ controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     Parent ! {Ref, {ok, self(), Reader}},
     controller_loop(Socket, OwnName, Reader, Sender1, undefined).
 
--spec controller_loop(socket:socket(), binary(), bouncer_protocol:receiver(), bouncer_protocol:sender(), undefined | reference()) -> no_return().
+-spec controller_loop(inet:socket(), binary(), pid(), bouncer_protocol:sender(),
+                      undefined | erlang:dist_handle()) -> no_return().
 controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
     receive
         {send_packet, From, Ref, Packet} ->
@@ -290,6 +299,7 @@ controller_drain(Socket, OwnName, Reader, Sender, DHandle, Count) ->
             end
     end.
 
+-spec start_reader(inet:socket(), bouncer_protocol:receiver(), term(), binary()) -> term().
 start_reader(Socket, Receiver0, Role, OwnName) ->
     Receiver = bouncer_protocol:rx_start(Receiver0),
     reader_loop(Socket, Receiver, Role, OwnName, []).
@@ -335,6 +345,8 @@ take_packet([tick | Rest]) ->
 take_packet([{packet, Data} | Rest]) ->
     {packet, iolist_to_binary(Data), Rest}.
 
+-spec receive_data(inet:socket(), bouncer_protocol:receiver(), erlang:dist_handle(),
+                   binary()) -> term().
 receive_data(Socket, Receiver, DHandle, OwnName) ->
     case gen_tcp:recv(Socket, 0, infinity) of
         {ok, Bytes} ->
@@ -364,7 +376,8 @@ deliver_events([tick | Rest], DHandle) ->
     deliver_events(Rest, DHandle).
 
 
--spec write_packet(socket:socket(), bouncer_protocol:sender(), iodata()) -> {ok, bouncer_protocol:sender()} | {error, _}. 
+-spec write_packet(inet:socket(), bouncer_protocol:sender(), iodata()) ->
+          {ok, bouncer_protocol:sender()} | {error, term()}.
 write_packet(Socket, Sender, Packet) ->
     try bouncer_protocol:tx_packet(Packet) of
         Pending ->
@@ -480,10 +493,12 @@ settings_value() ->
     {ok, Settings} = settings(),
     Settings.
 
+-spec tick(pid()) -> ok.
 tick(Controller) when is_pid(Controller) ->
     Controller ! tick,
     ok.
 
+-spec getstat(pid()) -> term().
 getstat(Controller) when is_pid(Controller) ->
     Ref = make_ref(),
     Controller ! {getstat, self(), Ref},
@@ -520,15 +535,19 @@ address_fun(Socket) ->
             end
     end.
 
+-spec close(term()) -> term().
 close(Listen) ->
     inet_tcp_dist:close(Listen).
 
+-spec select(atom()) -> term().
 select(Node) ->
     inet_tcp_dist:select(Node).
 
+-spec address() -> term().
 address() ->
     inet_tcp_dist:address().
 
+-spec is_node_name(term()) -> boolean().
 is_node_name(Node) ->
     inet_tcp_dist:is_node_name(Node).
 

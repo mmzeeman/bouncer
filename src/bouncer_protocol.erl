@@ -572,6 +572,7 @@ effective_chunk(Chunk, {bucket, N}) -> min(Chunk, (?MAX_PLAINTEXT div N) * N - 3
 %% Initialization steps which must be done in the controlling process of the socket.
 %% It must be called at the start of the writing process. This initializes the
 %% zstream in the controlling process.
+-spec tx_start(sender()) -> sender().
 tx_start(#tx{ compression = {zlib, _}}=Tx) ->
     Z = zlib:open(),
     ok = zlib:deflateInit(Z, default, deflated, -15, 8, default),
@@ -673,6 +674,7 @@ rekey_due(#tx{frames_limit = FL, bytes_limit = BL, ms_limit = ML, frames = Frame
 %%
 
 %% Initialize the reader from the controlling process.
+-spec rx_start(receiver()) -> receiver().
 rx_start(#rx{accept_compression = true}=Rx) ->
     Z = zlib:open(),
     ok = zlib:inflateInit(Z, -15),
@@ -859,4 +861,3 @@ inflate_raw(Z, Data) ->
     catch
         error:_ -> {error, bad_compression}
     end.
-
