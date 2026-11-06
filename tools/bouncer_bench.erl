@@ -324,12 +324,12 @@ start_node(Carrier, Root, Suffix, Settings) ->
                   "-bouncer", "authorized_dirs", AuthDir,
                   "-bouncer", "generate", "false",
                   "-bouncer", "accept_compression", "true",
+                  "-bouncer", "padding", "none", % Not configurable in the benchmark
                   "-bouncer", "accept_suites",
                   string:join(?SUITES, ","),
                   "-bouncer", "suite", maps:get(suite, Settings),
                   "-bouncer", "compression", maps:get(compression, Settings),
-                  "-bouncer", "chunk_size",
-                  integer_to_list(maps:get(chunk_size, Settings))]}
+                  "-bouncer", "chunk_size", integer_to_list(maps:get(chunk_size, Settings))]}
         end,
     Dist = atom_to_list(Carrier),
     Args = ["+S", "4:4",

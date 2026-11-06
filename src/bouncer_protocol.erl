@@ -256,6 +256,7 @@ limits() ->
 -define(MAX_PLAINTEXT, 65519).
 -define(MAX_PAYLOAD, 65518).
 -define(DEFAULT_CHUNK_SIZE, 16384).
+-define(DEFAULT_PADDING, none).
 -define(DEFAULT_REKEY_BYTES, 1073741824).
 -define(DEFAULT_MAX_PACKET, 67108864).
 
@@ -343,8 +344,8 @@ limits() ->
 %% 
 %% | Key           | Native                                        | String                       | Default          |
 %% |---------------|-----------------------------------------------|------------------------------|------------------|
-%% | `chunk_size`  | `1..65518`                                    | `"16384"`                    | `16384`          |
-%% | `padding`     | `none`, `{bucket, N}`, `{fixed, N}`           | `"none"`, `"bucket:512"`, `"fixed:4096"` | `none` |
+%% | `chunk_size`  | `1..65518`                                    | `"16384"`                    | `65518`          |
+%% | `padding`     | `none`, `{bucket, N}`, `{fixed, N}`           | `"none"`, `"bucket:512"`, `"fixed:4096"` | `"bucket:1400"` |
 %% | `compression` | `none`, `{zlib, MinSize}`                     | `"none"`, `"zlib:256"`       | `none`           |
 %% | `rekey_after` | `never` or list of `{frames,N}`/`{bytes,B}`/`{ms,T}` | `"never"`, `"bytes:1073741824,ms:3600000"` | `[{bytes, 1073741824}]` |
 %% | `clock`       | `fun(() -> integer())` in ms (Opts only, for tests) | -                      | monotonic time   |
@@ -356,7 +357,7 @@ limits() ->
 sender_policy(Layers) ->
     try
         {ok, #{chunk_size => setting(chunk_size, Layers, ?DEFAULT_CHUNK_SIZE, fun parse_chunk_size/1),
-               padding => setting(padding, Layers, none, fun parse_padding/1),
+               padding => setting(padding, Layers, ?DEFAULT_PADDING, fun parse_padding/1),
                compression => setting(compression, Layers, none, fun parse_compression/1),
                rekey_after => setting(rekey_after, Layers, [{bytes, ?DEFAULT_REKEY_BYTES}],
                                       fun parse_rekey_after/1),
