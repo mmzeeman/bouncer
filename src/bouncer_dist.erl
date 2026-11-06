@@ -178,12 +178,15 @@ initialize_controller(Socket, Result, Settings, Role) ->
     try
         #{send := Send, recv := Recv} = Result,
         #{sender_policy := SP, receiver_policy := RP} = Settings,
+
         Sender = bouncer_protocol:new_sender(Send, SP),
         Receiver = bouncer_protocol:new_receiver(Recv, RP),
+
         Ref = make_ref(),
         Controller = spawn_link(?MODULE, controller_init,
                                 [self(), Ref, Socket, Receiver, Sender,
                                  {Role, maps:get(node_name, Settings)}]),
+
         receive
             {Ref, {ok, Controller, Reader}} ->
                 case gen_tcp:controlling_process(Socket, Reader) of
@@ -201,6 +204,7 @@ initialize_controller(Socket, Result, Settings, Role) ->
         error:ControllerReason -> {error, ControllerReason}
     end.
 
+-spec controller_init(pid(), reference(), socket:socket(), bouncer_protocol:receiver(), bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
     Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
@@ -208,6 +212,7 @@ controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     Parent ! {Ref, {ok, self(), Reader}},
     controller_loop(Socket, OwnName, Reader, Sender1, undefined).
 
+-spec controller_loop(socket:socket(), binary(), bouncer_protocol:receiver(), bouncer_protocol:sender(), undefined | reference()) -> no_return().
 controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
     receive
         {send_packet, From, Ref, Packet} ->
@@ -359,11 +364,14 @@ deliver_events([tick | Rest], DHandle) ->
     deliver_events(Rest, DHandle).
 
 
+-spec write_packet(socket:socket(), bouncer_protocol:sender(), iodata()) -> {ok, bouncer_protocol:sender()} | {error, _}. 
 write_packet(Socket, Sender, Packet) ->
     try bouncer_protocol:tx_packet(Packet) of
-        Pending -> write_packet_frames(Socket, Sender, Pending, [], 0)
+        Pending ->
+            write_packet_frames(Socket, Sender, Pending, [], 0)
     catch
-        error:Reason -> {error, Reason}
+        error:Reason ->
+            {error, Reason}
     end.
 
 write_packet_frames(Socket, Sender, Pending, Acc, Size) ->
@@ -557,6 +565,9 @@ socket_options(Settings) ->
      {packet, 0},
      {active, false},
      {nodelay, true},
+     {sndbuf, 262144},
+     {recbuf, 262144},
+     {buffer, 262144},
      {send_timeout, maps:get(send_timeout_ms, Settings)},
      {send_timeout_close, true}].
 

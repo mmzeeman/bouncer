@@ -10,16 +10,16 @@
 %%   enoise_hs_state:finalize(State) returns the two split cipher states.
 %%     It assigns initiator tx=CS1, rx=CS2 and responder rx=CS1, tx=CS2.
 %%     The loopback transport test verifies this.
+
 -module(bouncer_hs).
 
--moduledoc """
-Noise XX handshake over a passive raw gen_tcp socket.
-
-On success the socket remains open immediately after the final handshake
-flight, ready for transport framing. An initiator returns without waiting for
-confirmation after sending message 3; if the responder rejects message 3,
-the initiator observes the closed socket on its next read.
-""".
+% 
+% Noise XX handshake over a passive raw gen_tcp socket.
+% 
+% On success the socket remains open immediately after the final handshake
+% flight, ready for transport framing. An initiator returns without waiting for
+% confirmation after sending message 3; if the responder rejects message 3,
+% the initiator observes the closed socket on its next read.
 
 -export([initiate/4, respond/4]).
 
