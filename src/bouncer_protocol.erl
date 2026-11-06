@@ -912,7 +912,7 @@ unpad1(<<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
         false ->
             {error, bad_padding}
     end;
-unpad1(B) when is_binary(B) ->
+unpad1(_) ->
     {error, bad_padding}.
 
 inflate_raw(Z, Data) ->
