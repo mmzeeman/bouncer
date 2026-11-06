@@ -1,6 +1,10 @@
 %% Pure wire-format helpers for the bouncer Noise handshake.
 -module(bouncer_protocol).
 
+-ifdef(TEST).
+-export([unpad/2]).
+-endif.
+
 -export([
     hello_header/1,
     hello/2,
@@ -827,22 +831,28 @@ padded(Flags, Payload, PadLen) ->
     {Flags bor ?F_PAD, [<<PadLen:16>>, Payload, <<0:(PadLen * 8)>>]}.
 
 
--spec unpad(flags(), binary()) -> {ok, iodata()} | {error, bad_padding}.
+-spec unpad(flags(), iodata()) -> {ok, iodata()} | {error, bad_padding}.
 unpad(Flags, Rest) when Flags band ?F_PAD =:= 0 ->
     {ok, Rest};
-unpad(_, <<PadLen:16, Body/binary>>) when PadLen =< byte_size(Body) ->
-    PayloadLen = byte_size(Body) - PadLen,
-    <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
-    case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT
-         andalso Padding =:= <<0:(PadLen * 8)>>
-    of
-        true ->
-            {ok, Payload};
-        false ->
+unpad(_, Rest) ->
+    try iolist_to_binary(Rest) of
+        <<PadLen:16, Body/binary>> when PadLen =< byte_size(Body) ->
+            PayloadLen = byte_size(Body) - PadLen,
+            <<Payload:PayloadLen/binary, Padding:PadLen/binary>> = Body,
+            case 3 + PayloadLen + PadLen =< ?MAX_PLAINTEXT
+                 andalso Padding =:= <<0:(PadLen * 8)>>
+            of
+                true ->
+                    {ok, Payload};
+                false ->
+                    {error, bad_padding}
+            end;
+        _ ->
             {error, bad_padding}
-    end;
-unpad(_, _) ->
-    {error, bad_padding}.
+    catch
+        error:badarg ->
+            {error, bad_padding}
+    end.
 
 
 inflate_raw(Z, Data) ->

@@ -138,6 +138,13 @@ encode_name_test() ->
     ?assertEqual({error, bad_name},
                  bouncer_protocol:decode_name(<<3:16, "bad">>)).
 
+unpad_iodata_test() ->
+    Rest = [<<4:16>>, [<<"he">>, <<"llo">>], <<0, 0, 0, 0>>],
+    ?assertEqual({ok, <<"hello">>}, bouncer_protocol:unpad(8, Rest)),
+    ?assertEqual({error, bad_padding},
+                 bouncer_protocol:unpad(8, [<<4:16>>, <<"hello">>, <<1, 0, 0, 0>>])),
+    ?assertEqual({error, bad_padding}, bouncer_protocol:unpad(8, [<<4:16>>, 256])).
+
 limits_match_enoise_test_() ->
     [?_test(begin
         Limits = bouncer_protocol:limits(),
