@@ -101,7 +101,9 @@ accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, #{ keys := Keys, no
 
 -spec setup(atom(), atom(), atom(), boolean(), term()) -> term().
 setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    spawn_opt(?MODULE, do_setup, [self(), Node, Type, MyNode, LongOrShortNames, SetupTime], dist_util:net_ticker_spawn_options()).
+    spawn_opt(?MODULE, do_setup,
+              [self(), Node, Type, MyNode, LongOrShortNames, SetupTime],
+              dist_util:net_ticker_spawn_options()).
 
 -spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
@@ -190,9 +192,9 @@ initialize_controller(Socket, Result, Settings, Role) ->
         Receiver = bouncer_protocol:new_receiver(Recv, RP),
 
         Ref = make_ref(),
-        Controller = spawn_link(?MODULE, controller_init,
-                                [self(), Ref, Socket, Receiver, Sender,
-                                 {Role, maps:get(node_name, Settings)}]),
+        Controller = spawn_opt(?MODULE, controller_init,
+                               [self(), Ref, Socket, Receiver, Sender, {Role, maps:get(node_name, Settings)}],
+                               [link, {priority, max}, {message_queue_data, off_heap}]),
 
         receive
             {Ref, {ok, Controller, Reader}} ->
@@ -215,7 +217,11 @@ initialize_controller(Socket, Result, Settings, Role) ->
                       bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
 controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
     process_flag(trap_exit, true),
-    Reader = spawn_link(?MODULE, start_reader, [Socket, Receiver, Role, OwnName]),
+
+    Reader = spawn_opt(?MODULE, start_reader,
+                       [Socket, Receiver, Role, OwnName],
+                       [link, {priority, max}, {message_queue_data, off_heap}]),
+
     Sender1 = bouncer_protocol:tx_start(Sender),
     Parent ! {Ref, {ok, self(), Reader}},
     controller_loop(Socket, OwnName, Reader, Sender1, undefined).
@@ -250,7 +256,6 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
         {handshake_complete, From, Ref, Reader, DHandle} ->
             ok = erlang:dist_ctrl_input_handler(DHandle, Reader),
             Reader ! {data_phase, DHandle},
-            process_flag(priority, normal),
             erlang:dist_ctrl_get_data_notification(DHandle),
             From ! {Ref, ok},
             controller_loop(Socket, OwnName, Reader, Sender, DHandle);
@@ -290,8 +295,7 @@ controller_drain(Socket, OwnName, Reader, Sender, DHandle, Count) ->
                     self() ! dist_data,
                     controller_loop(Socket, OwnName, Reader, Sender1, DHandle);
                 {ok, Sender1} ->
-                    controller_drain(Socket, OwnName, Reader, Sender1,
-                                     DHandle, Count + 1);
+                    controller_drain(Socket, OwnName, Reader, Sender1, DHandle, Count + 1);
                 {error, Reason} ->
                     log_io_error(OwnName, {send, Reason}),
                     gen_tcp:close(Socket),
