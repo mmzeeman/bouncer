@@ -311,7 +311,7 @@ limits() ->
 -record(rx, {
     cs                 :: enoise_cipher_state:state(),
     buf = <<>>         :: binary(),
-    acc = []           :: [binary()],
+    acc = []           :: [iodata()],
     acc_size = 0       :: non_neg_integer(),
     max_packet         :: pos_integer(),
     accept_compression :: boolean(),
@@ -623,7 +623,7 @@ tx_data(S, Chunk, Flags) ->
 maybe_compress(#tx{compression = {zlib, MinSize}, zstream = Z}, Chunk, Flags)
   when byte_size(Chunk) >= MinSize ->
     Compressed = deflate_raw(Z, Chunk),
-    case byte_size(Compressed) < byte_size(Chunk) of
+    case iolist_size(Compressed) < byte_size(Chunk) of
         true -> {Flags bor ?F_COMP, Compressed};
         false -> {Flags, Chunk}
     end;
@@ -632,7 +632,7 @@ maybe_compress(_, Chunk, Flags) ->
 
 deflate_raw(Z, Data) ->
     ok = zlib:deflateReset(Z),
-    iolist_to_binary(zlib:deflate(Z, Data, finish)).
+    zlib:deflate(Z, Data, finish).
 
 emit(#tx{padding = Padding} = S, Flags0, Payload) ->
     {Flags1, Body} = pad(Padding, Flags0, Payload),
@@ -774,18 +774,18 @@ rx_payload(R, Flags, Payload) when Flags band ?F_COMP =/= 0 ->
             {error, compression_not_accepted};
         true ->
             case inflate_raw(R#rx.zstream, Payload) of
-                {ok, Chunk} ->
-                    rx_data(R, Flags, Chunk);
+                {ok, Chunk, ChunkSize} ->
+                    rx_data(R, Flags, Chunk, ChunkSize);
                 {error, _} = Error ->
                     Error
             end
     end;
 rx_payload(R, Flags, Payload) ->
-    rx_data(R, Flags, Payload).
+    rx_data(R, Flags, Payload, byte_size(Payload)).
 
 %%
-rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk) ->
-    Size1 = Size + byte_size(Chunk),
+rx_data(#rx{acc = Acc, acc_size = Size, max_packet = Max} = R, Flags, Chunk, ChunkSize) ->
+    Size1 = Size + ChunkSize,
     if
         Size1 > Max ->
             {error, packet_too_large};
@@ -862,7 +862,7 @@ inflate_raw(Z, Data) ->
             OutSize =:= 0 ->
                 {error, bad_compression};
             true ->
-                {ok, iolist_to_binary(Out)}
+                {ok, Out, OutSize}
         end
     catch
         error:_ -> {error, bad_compression}
