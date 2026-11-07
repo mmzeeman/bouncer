@@ -21,8 +21,7 @@
     receive_data/4,
 
     controller_init/6,
-    tick/1,
-    getstat/1
+    tick/1
 ]).
 
 -include_lib("kernel/include/net_address.hrl").
@@ -162,9 +161,9 @@ start_dist_handshake(Kernel, Socket, MyNode, OtherNode, Allowed, Timer, Settings
                          f_getll = fun(Ctrl) -> {ok, Ctrl} end,
                          f_address = address_fun(Socket),
                          mf_tick = fun ?MODULE:tick/1,
-                         mf_getstat = fun ?MODULE:getstat/1,
-                         mf_setopts = setopts_fun(Socket),
-                         mf_getopts = fun(_Ctrl, Opts) -> inet:getopts(Socket, Opts) end,
+                         mf_getstat = getstats_fun(Controller, Socket),
+                         mf_setopts = setopts_fun(Controller, Socket),
+                         mf_getopts = getopts_fun(Controller, Socket),
                          f_handshake_complete = fun(Ctrl, _Node, DHandle) ->
                                      handshake_complete(Ctrl, Reader, DHandle)
                              end},
@@ -250,9 +249,6 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
                     gen_tcp:close(Socket),
                     exit({send_error, Reason})
             end;
-        {getstat, From, Ref} ->
-            From ! {Ref, inet_tcp_dist:getstat(Socket)},
-            controller_loop(Socket, OwnName, Reader, Sender, undefined);
         {handshake_complete, From, Ref, Reader, DHandle} ->
             ok = erlang:dist_ctrl_input_handler(DHandle, Reader),
             Reader ! {data_phase, DHandle},
@@ -265,9 +261,6 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
     end;
 controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
     receive
-        {getstat, From, Ref} ->
-            From ! {Ref, inet_tcp_dist:getstat(Socket)},
-            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
         dist_data ->
             controller_drain(Socket, OwnName, Reader, Sender, DHandle, 0);
         tick ->
@@ -279,6 +272,11 @@ controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
                     gen_tcp:close(Socket),
                     exit({send_error, Reason})
             end;
+        %{info, Ref, Pid} ->
+        %    Pid ! {Ref, {inet:getstat(Socket),
+        %                 inet:peername(Socket)
+        %                }},
+        %    controller_loop(Socket, OwnName, Reader, Sender, DHandle);
         {'EXIT', _Pid, Reason} ->
             gen_tcp:close(Socket),
             exit({controller_child_exit, Reason})
@@ -317,7 +315,7 @@ drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Cou
                 {ok, Sender1, Pending1, _}
                   when Count + 1 >= ?DRAIN_MAX_PACKETS ->
                     %% Packet cap reached: flush, then yield to other
-                    %% messages (getstat, tick, EXIT) exactly as before,
+                    %% messages (tick, EXIT) exactly as before,
                     %% and continue with a fresh drain via self() ! dist_data.
                     case send_frames(Socket, Pending1) of
                         ok ->
@@ -559,28 +557,38 @@ tick(Controller) when is_pid(Controller) ->
     Controller ! tick,
     ok.
 
--spec getstat(pid()) -> term().
-getstat(Controller) when is_pid(Controller) ->
-    Ref = make_ref(),
-    Controller ! {getstat, self(), Ref},
-    receive
-        {Ref, Result} -> Result
-    after 5000 ->
-        {error, timeout}
+getstats_fun(Controller, Socket) ->
+    fun(C) when C =:= Controller ->
+        case inet:getstat(Socket, [recv_cnt, send_cnt, send_pend]) of
+            {ok, Stat} ->
+                {ok, proplists:get_value(recv_cnt, Stat, 0),
+                     proplists:get_value(send_cnt, Stat, 0),
+                     proplists:get_value(send_pend, Stat, 0)};
+            Error ->
+                Error
+        end
     end.
 
-setopts_fun(Socket) ->
-    fun(_Controller, Opts) ->
-            case [Opt || {Key, _} = Opt <- Opts,
-                         Key =:= active orelse Key =:= packet orelse Key =:= deliver
-                                  orelse Key =:= mode] of
+setopts_fun(Controller, Socket) ->
+    fun(C, Opts) when C =:= Controller->
+            case
+                [Opt || {K, _}=Opt <- Opts,
+                        K =:= active
+                        orelse K =:= deliver
+                        orelse K =:= packet]
+            of
                 [] ->
                     inet:setopts(Socket, Opts);
-                Bad ->
-                    {error, {badopts, Bad}}
+                Opts1 ->
+                    {error, {badopts,Opts1}}
             end
     end.
 
+getopts_fun(Controller, Socket) ->
+    fun(C, Opts) when C =:= Controller ->
+        inet:getopts(Socket, Opts)
+    end.
+            
 address_fun(Socket) ->
     fun(_Controller, Node) ->
             case inet:peername(Socket) of
