@@ -20,7 +20,7 @@
     start_reader/4,
     receive_data/4,
 
-    controller_init/6,
+    controller_init/3,
     tick/1
 ]).
 
@@ -30,6 +30,19 @@
 -define(SETTINGS, {?MODULE, settings}).
 -define(DRAIN_MAX_PACKETS, 64).
 -define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
+
+-record(controller_state, {
+    socket    :: inet:socket(),
+    role      :: responder | initiator,
+    own_name  :: binary(),
+
+    receiver  :: bouncer_protocol:receiver(),
+    sender    :: bouncer_protocol:sender(),
+
+    reader_pid :: undefined | pid(),
+
+    dhandle    :: undefined | erlang:dist_handle()
+}).
 
 -spec listen(atom() | binary() | string()) -> term().
 listen(Name) ->
@@ -191,8 +204,14 @@ initialize_controller(Socket, Result, Settings, Role) ->
         Receiver = bouncer_protocol:new_receiver(Recv, RP),
 
         Ref = make_ref(),
+        State = #controller_state{ own_name = maps:get(node_name, Settings),
+                                   socket = Socket,
+                                   role = Role,
+                                   sender = Sender,
+                                   receiver = Receiver
+                                 },
         Controller = spawn_opt(?MODULE, controller_init,
-                               [self(), Ref, Socket, Receiver, Sender, {Role, maps:get(node_name, Settings)}],
+                               [self(), Ref, State],
                                [link, {priority, max}, {message_queue_data, off_heap}]),
 
         receive
@@ -212,28 +231,34 @@ initialize_controller(Socket, Result, Settings, Role) ->
         error:ControllerReason -> {error, ControllerReason}
     end.
 
--spec controller_init(pid(), reference(), inet:socket(), bouncer_protocol:receiver(),
-                      bouncer_protocol:sender(), {atom(), binary()}) -> no_return().
-controller_init(Parent, Ref, Socket, Receiver, Sender, {Role, OwnName}) ->
+-spec controller_init(pid(), reference(), #controller_state{}) -> no_return().
+controller_init(Parent, Ref, #controller_state{ socket = Socket, receiver = Receiver, sender = Sender, role = Role, own_name = OwnName}=State) ->
     process_flag(trap_exit, true),
 
+
+    % Start the reader/receiver.
     Reader = spawn_opt(?MODULE, start_reader,
                        [Socket, Receiver, Role, OwnName],
                        [link, {priority, max}, {message_queue_data, off_heap}]),
 
-    Sender1 = bouncer_protocol:tx_start(Sender),
+    % Tell the parent controller and reader are ready to start the handshake.
     Parent ! {Ref, {ok, self(), Reader}},
-    controller_loop(Socket, OwnName, Reader, Sender1, undefined).
 
--spec controller_loop(inet:socket(), binary(), pid(), bouncer_protocol:sender(),
-                      undefined | erlang:dist_handle()) -> no_return().
-controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
+    % The controller itself is the sender.
+    State1 = State#controller_state{ sender = bouncer_protocol:tx_start(Sender),
+                                     reader_pid = Reader },
+
+    % Do the dist handshake.
+    controller_handshake(State1).
+
+-spec controller_handshake(#controller_state{}) -> no_return().
+controller_handshake(#controller_state{ socket = Socket, own_name = OwnName, reader_pid = Reader, sender = Sender}=State) ->
     receive
         {send_packet, From, Ref, Packet} ->
             case write_packet(Socket, Sender, Packet) of
                 {ok, Sender1} ->
                     From ! {Ref, ok},
-                    controller_loop(Socket, OwnName, Reader, Sender1, undefined);
+                    controller_handshake(State#controller_state{ sender = Sender1 });
                 {error, Reason} ->
                     From ! {Ref, {error, Reason}},
                     log_io_error(OwnName, {send, Reason}),
@@ -243,7 +268,7 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
         tick ->
             case send_tick(Socket, Sender) of
                 {ok, Sender1} ->
-                    controller_loop(Socket, OwnName, Reader, Sender1, undefined);
+                    controller_handshake(State#controller_state{ sender = Sender1 });
                 {error, Reason} ->
                     log_io_error(OwnName, {tick, Reason}),
                     gen_tcp:close(Socket),
@@ -254,19 +279,22 @@ controller_loop(Socket, OwnName, Reader, Sender, undefined) ->
             Reader ! {data_phase, DHandle},
             erlang:dist_ctrl_get_data_notification(DHandle),
             From ! {Ref, ok},
-            controller_loop(Socket, OwnName, Reader, Sender, DHandle);
+
+            controller_connected(State#controller_state{ dhandle = DHandle });
         {'EXIT', _Pid, Reason} ->
             gen_tcp:close(Socket),
             exit({controller_child_exit, Reason})
-    end;
-controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
+    end.
+
+ -spec controller_connected(#controller_state{}) -> no_return().
+controller_connected(#controller_state{ socket = Socket, own_name = OwnName, sender = Sender}=State) ->
     receive
         dist_data ->
-            controller_drain(Socket, OwnName, Reader, Sender, DHandle, 0);
+            controller_drain(0, State);
         tick ->
             case send_tick(Socket, Sender) of
                 {ok, Sender1} ->
-                    controller_loop(Socket, OwnName, Reader, Sender1, DHandle);
+                    controller_connected(State#controller_state{ sender = Sender1});
                 {error, Reason} ->
                     log_io_error(OwnName, {tick, Reason}),
                     gen_tcp:close(Socket),
@@ -276,19 +304,19 @@ controller_loop(Socket, OwnName, Reader, Sender, DHandle) ->
         %    Pid ! {Ref, {inet:getstat(Socket),
         %                 inet:peername(Socket)
         %                }},
-        %    controller_loop(Socket, OwnName, Reader, Sender, DHandle);
+        %    controller_connected(Socket, OwnName, Reader, Sender, DHandle);
         {'EXIT', _Pid, Reason} ->
             gen_tcp:close(Socket),
             exit({controller_child_exit, Reason})
     end.
 
 
-controller_drain(Socket, OwnName, Reader, Sender, DHandle, Count) ->
-    drain_batch(Socket, OwnName, Reader, Sender, DHandle, [], 0, Count).
+controller_drain(Count, State) ->
+    drain_batch([], 0, Count, State).
 
 %% Pending: encrypted frames not yet written, in reverse order.
 %% PendingBytes: total byte size of Pending.
-drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Count) ->
+drain_batch(Pending, PendingBytes, Count, #controller_state{ socket = Socket, own_name = OwnName, sender = Sender, dhandle = DHandle}=State) ->
     case erlang:dist_ctrl_get_data(DHandle) of
         none ->
             %% Re-arm the VM notification first; it may queue more data
@@ -296,7 +324,7 @@ drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Cou
             erlang:dist_ctrl_get_data_notification(DHandle),
             case send_frames(Socket, Pending) of
                 ok ->
-                    controller_loop(Socket, OwnName, Reader, Sender, DHandle);
+                    controller_connected(State);
                 {error, Reason} ->
                     drain_send_failed(Socket, OwnName, Reason)
             end;
@@ -307,8 +335,7 @@ drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Cou
                     %% Byte cap reached: write the batch out and keep draining.
                     case send_frames(Socket, Pending1) of
                         ok ->
-                            drain_batch(Socket, OwnName, Reader, Sender1,
-                                        DHandle, [], 0, Count + 1);
+                            drain_batch([], 0, Count + 1, State#controller_state{ sender = Sender1});
                         {error, Reason} ->
                             drain_send_failed(Socket, OwnName, Reason)
                     end;
@@ -320,14 +347,12 @@ drain_batch(Socket, OwnName, Reader, Sender, DHandle, Pending, PendingBytes, Cou
                     case send_frames(Socket, Pending1) of
                         ok ->
                             self() ! dist_data,
-                            controller_loop(Socket, OwnName, Reader,
-                                            Sender1, DHandle);
+                            controller_connected(State#controller_state{ sender = Sender1 });
                         {error, Reason} ->
                             drain_send_failed(Socket, OwnName, Reason)
                     end;
                 {ok, Sender1, Pending1, PendingBytes1} ->
-                    drain_batch(Socket, OwnName, Reader, Sender1, DHandle,
-                                Pending1, PendingBytes1, Count + 1);
+                    drain_batch(Pending1, PendingBytes1, Count + 1, State#controller_state{ sender = Sender1});
                 {error, Reason} ->
                     drain_send_failed(Socket, OwnName, Reason)
             end
