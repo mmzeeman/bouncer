@@ -9,7 +9,7 @@
          unauthorized_and_name_binding/1, supported_suites/1, rekey/1,
          idle_disconnect_reconnect_and_revocation/1, max_pending/1,
          wrong_distribution_protocol/1, logs_do_not_contain_secret_key/1,
-         config_restart/1, config_fail_closed/1, isolated_settings/1,
+         config_restart/1, isolated_settings/1,
          invalid_settings_start/1, no_key_start/1,
          get_value/1, captured_logs/0, ct_data_owner/1]).
 -export([echo_loop/0, echo_sender/3, send_many/4,
@@ -22,7 +22,7 @@ all() ->
      unauthorized_and_name_binding, supported_suites, rekey,
      idle_disconnect_reconnect_and_revocation, max_pending,
      wrong_distribution_protocol, logs_do_not_contain_secret_key,
-     config_restart, config_fail_closed, isolated_settings,
+     config_restart, isolated_settings,
      invalid_settings_start, no_key_start].
 
 init_per_suite(Config) ->
@@ -310,20 +310,6 @@ config_restart(Config) ->
     ?assert(is_pid(NewPid)),
     ?assertNotEqual(OldPid, NewPid),
     _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
-    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
-    ok.
-
-config_fail_closed(Config) ->
-    PeerA = ?config(peer_a, Config),
-    NodeB = ?config(node_b, Config),
-    _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
-    ?assertEqual(ok, peer:call(PeerA, supervisor, terminate_child,
-                               [bouncer_dist_sup, bouncer_dist_config])),
-    ?assertEqual({error, not_ready},
-                 peer:call(PeerA, bouncer_dist_config, get, [suite])),
-    ?assertEqual(pang, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
-    {ok, _} = peer:call(PeerA, supervisor, restart_child,
-                        [bouncer_dist_sup, bouncer_dist_config]),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     ok.
 

@@ -1,15 +1,31 @@
 -module(bouncer_dist_config).
 -behaviour(gen_server).
 
--export([start_link/0, configure_node/1, get/1,
-         key_info/0, key_info/1, node_name/0, limit_handle/0]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    create_config_table/0,
+    start_link/0,
+    configure_node/1,
+    get/1,
+    key_info/0,
+    key_info/1,
+    node_name/0,
+    limit_handle/0
+]).
+
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -define(TABLE, bouncer_dist_config).
 
--record(state, {parsed, node_name = undefined, key_info = undefined,
-                settings = undefined, limit_handle}).
+-record(state, {
+    parsed,
+    node_name = undefined,
+    key_info = undefined,
+    settings = undefined,
+    limit_handle
+}).
+
+create_config_table() ->
+    _ = ets:new(?TABLE, [set, public, named_table, {read_concurrency, true}]).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -36,11 +52,10 @@ init([]) ->
     %% Sensitive limits tracing and process_info exposure, but does not hide
     %% this state from sys:get_state/1.
     process_flag(sensitive, true),
+
     case bouncer_settings:parse() of
         {ok, Parsed} ->
             LimitHandle = bouncer_limit:new(maps:get(max_pending, Parsed)),
-            _ = ets:new(?TABLE, [named_table, set, protected,
-                                 {read_concurrency, true}]),
             State0 = #state{parsed = Parsed, limit_handle = LimitHandle},
             case current_node_name() of
                 undefined ->
