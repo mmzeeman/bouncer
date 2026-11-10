@@ -6,6 +6,7 @@
     start_link/0,
     configure_node/1,
     get/1,
+    connection_settings/0,
     key_info/0,
     key_info/1,
     node_name/0,
@@ -35,6 +36,9 @@ configure_node(NodeName) ->
 
 get(Key) ->
     table_value(Key).
+
+connection_settings() ->
+    call(connection_settings).
 
 key_info() ->
     call(key_info).
@@ -86,6 +90,13 @@ handle_call({configure_node, NodeName}, _From, State) ->
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
+handle_call(connection_settings, _From,
+            #state{settings = undefined} = State) ->
+    {reply, {error, not_ready}, State};
+handle_call(connection_settings, _From, #state{settings = Settings} = State) ->
+    Keys = [node_name, config_generation, fingerprint, send_timeout_ms,
+            sender_policy, receiver_policy, hs_opts],
+    {reply, {ok, maps:with(Keys, Settings)}, State};
 handle_call(key_info, _From, #state{key_info = undefined} = State) ->
     {reply, {error, not_ready}, State};
 handle_call(key_info, _From, #state{key_info = KeyInfo} = State) ->

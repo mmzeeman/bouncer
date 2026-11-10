@@ -66,7 +66,7 @@ childspecs() ->
 
 -spec accept(term()) -> term().
 accept(ListenSocket) ->
-    case worker_settings() of
+    case bouncer_dist_config:connection_settings() of
         {ok, Settings} ->
             spawn_opt(?MODULE, accept_loop, [self(), ListenSocket, Settings],
                       [link, {priority, max}]);
@@ -87,7 +87,7 @@ accept_loop(Kernel, ListenSocket, Settings) ->
 accept_controller(Kernel, Socket, Settings) ->
     receive
         {bouncer_settings_request, Pid} ->
-            case worker_settings() of
+            case bouncer_dist_config:connection_settings() of
                 {ok, CurrentSettings} ->
                     Pid ! {bouncer_settings, self(), CurrentSettings},
                     accept_controller(Kernel, Socket, CurrentSettings);
@@ -127,7 +127,7 @@ accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
 -spec do_accept(pid(), pid(), term(), atom(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime,
-              worker_settings()).
+              bouncer_dist_config:connection_settings()).
 
 -spec do_accept(pid(), pid(), term(), atom(), term(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime, SettingsResult) ->
@@ -177,7 +177,7 @@ setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
 
 -spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    case worker_settings() of
+    case bouncer_dist_config:connection_settings() of
         {ok, #{config_generation := Generation} = Settings} ->
             case bouncer_dist_config:key_info(Generation) of
                 {ok, Keys} ->
@@ -738,41 +738,6 @@ socket_options(Settings) ->
      {buffer, 262144},
      {send_timeout, maps:get(send_timeout_ms, Settings)},
      {send_timeout_close, true}].
-
-worker_settings() ->
-    BaseKeys = [node_name, config_generation, fingerprint, send_timeout_ms,
-                sender_policy, receiver_policy],
-    HandshakeKeys = [handshake_timeout_ms, send_timeout_ms, max_pending, suite,
-                     accept_suites, own_name, node_name, limit_handle],
-    OptionalKeyOptions = [dir, generate, authorized_dirs],
-    case setting_values(BaseKeys ++ HandshakeKeys) of
-        {ok, Values} ->
-            KeyOptions = optional_setting_values(OptionalKeyOptions),
-            HsOpts = maps:merge(maps:with(HandshakeKeys, Values), KeyOptions),
-            {ok, (maps:with(BaseKeys, Values))#{hs_opts => HsOpts}};
-        {error, _} = Error ->
-            Error
-    end.
-
-setting_values(Keys) ->
-    lists:foldl(
-      fun(Key, {ok, Acc}) ->
-              case bouncer_dist_config:get(Key) of
-                  {ok, Value} -> {ok, Acc#{Key => Value}};
-                  {error, _} = Error -> Error
-              end;
-         (_Key, {error, _} = Error) ->
-              Error
-      end, {ok, #{}}, Keys).
-
-optional_setting_values(Keys) ->
-    lists:foldl(
-      fun(Key, Acc) ->
-              case bouncer_dist_config:get(Key) of
-                  {ok, Value} -> Acc#{Key => Value};
-                  {error, not_ready} -> Acc
-              end
-      end, #{}, Keys).
 
 node_name(Name, Host) ->
     NameBin = to_binary(Name),

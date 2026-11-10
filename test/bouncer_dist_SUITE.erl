@@ -322,6 +322,13 @@ isolated_settings(Config) ->
     {ok, SuiteB} = peer:call(PeerB, bouncer_dist_config, get, [suite]),
     {ok, DirA} = peer:call(PeerA, bouncer_dist_config, get, [dir]),
     {ok, DirB} = peer:call(PeerB, bouncer_dist_config, get, [dir]),
+    {ok, SettingsA} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    ?assertEqual(atom_to_binary(NodeA, utf8), maps:get(node_name, SettingsA)),
+    ?assertEqual(SuiteA, maps:get(suite, maps:get(hs_opts, SettingsA))),
+    ?assertMatch({ok, _},
+                 peer:call(PeerA, bouncer_dist_config, key_info,
+                           [maps:get(config_generation, SettingsA)])),
     ?assertEqual({error, not_ready},
                  peer:call(PeerA, bouncer_dist_config, get, [settings])),
     ?assertEqual(chachapoly_blake2b, SuiteA),
