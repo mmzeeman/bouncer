@@ -134,8 +134,8 @@ do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime, SettingsResult)
     receive
         {AcceptPid, controller} ->
             case SettingsResult of
-                {ok, #{config_generation := Generation} = Settings} ->
-                    case bouncer_dist_config:key_info(Generation) of
+                {ok, Settings} ->
+                    case bouncer_dist_config:key_info() of
                         {ok, Keys} ->
                             do_accept_socket(Kernel, Socket, MyNode,
                                              Allowed, SetupTime,
@@ -178,8 +178,8 @@ setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
 -spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
     case bouncer_dist_config:connection_settings() of
-        {ok, #{config_generation := Generation} = Settings} ->
-            case bouncer_dist_config:key_info(Generation) of
+        {ok, Settings} ->
+            case bouncer_dist_config:key_info() of
                 {ok, Keys} ->
                     setup_connection(Kernel, Node, Type, MyNode,
                                      LongOrShortNames, SetupTime, Settings,

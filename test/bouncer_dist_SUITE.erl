@@ -9,12 +9,12 @@
          unauthorized_and_name_binding/1, supported_suites/1, rekey/1,
          idle_disconnect_reconnect_and_revocation/1, max_pending/1,
          wrong_distribution_protocol/1, logs_do_not_contain_secret_key/1,
-         config_restart/1, isolated_settings/1,
+         config_restart/1, isolated_settings/1, live_settings/1,
          invalid_settings_start/1, no_key_start/1,
          get_value/1, captured_logs/0, ct_data_owner/1]).
 -export([echo_loop/0, echo_sender/3, send_many/4,
          echo_sender_generated/3,
-         watch_node/2, kill_dist_socket/1,
+         watch_node/2, kill_dist_socket/1, distribution_send_timeout/2,
          adding_handler/1, removing_handler/1, log/2]).
 
 all() ->
@@ -22,7 +22,7 @@ all() ->
      unauthorized_and_name_binding, supported_suites, rekey,
      idle_disconnect_reconnect_and_revocation, max_pending,
      wrong_distribution_protocol, logs_do_not_contain_secret_key,
-     config_restart, isolated_settings,
+     config_restart, isolated_settings, live_settings,
      invalid_settings_start, no_key_start].
 
 init_per_suite(Config) ->
@@ -302,9 +302,12 @@ logs_do_not_contain_secret_key(Config) ->
 config_restart(Config) ->
     PeerA = ?config(peer_a, Config),
     NodeB = ?config(node_b, Config),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     {ok, OldSettings} =
         peer:call(PeerA, bouncer_dist_config, connection_settings, []),
-    OldGeneration = maps:get(config_generation, OldSettings),
+    OldLimit = maps:get(limit_handle, maps:get(hs_opts, OldSettings)),
+    true = peer:call(PeerA, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 1234}]),
     OldPid = peer:call(PeerA, erlang, whereis, [bouncer_dist_config]),
     ?assert(is_pid(OldPid)),
     _ = peer:call(PeerA, erlang, exit, [OldPid, kill]),
@@ -314,10 +317,10 @@ config_restart(Config) ->
     ?assertNotEqual(OldPid, NewPid),
     {ok, NewSettings} =
         peer:call(PeerA, bouncer_dist_config, connection_settings, []),
-    ?assertNotEqual(OldGeneration, maps:get(config_generation, NewSettings)),
-    ?assertEqual({error, stale_configuration},
-                 peer:call(PeerA, bouncer_dist_config, key_info,
-                           [OldGeneration])),
+    ?assertEqual(1234, maps:get(send_timeout_ms, NewSettings)),
+    ?assertEqual(OldLimit, maps:get(limit_handle, maps:get(hs_opts, NewSettings))),
+    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     ok.
@@ -352,9 +355,7 @@ isolated_settings(Config) ->
                          [bouncer_dist_config,
                           {send_timeout_ms, SendTimeout}])
     end,
-    ?assertMatch({ok, _},
-                 peer:call(PeerA, bouncer_dist_config, key_info,
-                           [maps:get(config_generation, SettingsA)])),
+    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
     ?assertEqual({error, not_ready},
                  peer:call(PeerA, bouncer_dist_config, get, [settings])),
     ?assertEqual(chachapoly_blake2b, SuiteA),
@@ -362,6 +363,40 @@ isolated_settings(Config) ->
     ?assertNotEqual(DirA, DirB),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     ?assertEqual(pong, peer:call(PeerB, net_adm, ping, [NodeA], 30000)),
+    ok.
+
+live_settings(Config) ->
+    PeerA = ?config(peer_a, Config),
+    PeerB = ?config(peer_b, Config),
+    NodeA = ?config(node_a, Config),
+    NodeB = ?config(node_b, Config),
+    Port = node_port(NodeB),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    true = peer:call(PeerA, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 12000}]),
+    true = peer:call(PeerB, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 13000}]),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    ?assertEqual(true, peer:call(PeerA, erlang, disconnect_node, [NodeB])),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ?assertEqual({ok, 12000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 13000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    ?assert(lists:member(NodeA, peer:call(PeerB, erlang, nodes, []))),
     ok.
 
 invalid_settings_start(Config) ->
@@ -530,6 +565,28 @@ socket_peer_port(Socket) ->
         _ -> undefined
     catch
         _:_ -> undefined
+    end.
+
+distribution_send_timeout(Side, Port) ->
+    Sockets = [Socket || Socket <- erlang:ports(),
+                         socket_peer_port(Socket) =/= undefined,
+                         socket_port(Side, Socket) =:= Port],
+    case Sockets of
+        [Socket] ->
+            case inet:getopts(Socket, [send_timeout]) of
+                {ok, [{send_timeout, Timeout}]} -> {ok, Timeout};
+                Error -> Error
+            end;
+        _ ->
+            {error, {expected_one_distribution_socket, length(Sockets)}}
+    end.
+
+socket_port(peer, Socket) ->
+    socket_peer_port(Socket);
+socket_port(local, Socket) ->
+    case inet:sockname(Socket) of
+        {ok, {_, Port}} -> Port;
+        {error, _} -> undefined
     end.
 
 node_port(Node) ->

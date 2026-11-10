@@ -224,28 +224,29 @@ flags, flags over environment, and environment over defaults. Invalid values
 make distribution startup fail with the setting name and accepted values.
 
 The distribution module's `childspecs/0` starts `bouncer_dist_sup` under
-`net_sup` before `net_kernel` and before applications are started. Its
-`bouncer_dist_config` child parses settings without using the `bouncer`
-application or application environment. Since the node name is not available
-when that child first starts, `listen/2` supplies the name and the config
-process loads the corresponding key before opening the listener. If the config
-process later restarts, it rebuilds settings from the startup flags and
-environment and reloads the key for the running node name.
+`net_sup` before `net_kernel` and before applications are started. The supervisor
+parses settings once from startup flags and environment without using the
+`bouncer` application or application environment. Since the node name is not
+available when its `bouncer_dist_config` child first starts, `listen/2` supplies
+the name and the config process loads the corresponding key before opening the
+listener. If the config process later restarts, it reloads the key for the
+running node name without resetting the ETS settings.
 
 Effective non-secret settings and the pending-handshake counters handle are
 published as individual key/value entries in a public, read-concurrent ETS
 table owned by the distribution supervisor. `bouncer_dist_config:get/1` retrieves
 one value at a time; `connection_settings/0` assembles a connection snapshot
-from individual ETS entries and checks its configuration generation. The key-info
-map, including the secret-key accessor, stays
+from individual ETS entries. Live ETS updates apply to new connections; existing
+connections retain their initialized settings. Concurrent multi-key updates may
+be observed partially. The key-info map, including the secret-key accessor, stays
 only in the config process state and is fetched once per handshake; it is not
 placed in ETS or the process dictionary. A missing table or unavailable config during
 restart is treated as not-ready, so a handshake fails closed rather than using
 empty or default options. The process is marked sensitive to limit tracing and
 `process_info` exposure; this does not hide its state from `sys:get_state/1`.
 Established connections are not children of the config supervisor and continue
-using their already-initialized transport state; new handshakes fail closed
-until the config child has rebuilt its ETS data.
+using their already-initialized transport state; new handshakes require the
+config child to supply key info.
 
 This follows the `inet_tls_dist` startup pattern: the carrier exports
 `childspecs/0`, the distribution supervisor starts before `net_kernel`, and

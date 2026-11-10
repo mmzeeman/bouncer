@@ -15,9 +15,15 @@ start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 init([]) ->
-    % Let the dist kernel own the table.
     _ = bouncer_dist_config:create_config_table(),
+    case bouncer_dist_config:load_settings() of
+        ok ->
+            child_specs();
+        {error, Reason} ->
+            exit({invalid_settings, Reason})
+    end.
 
+child_specs() ->
     Config = #{id => bouncer_dist_config,
                start => {bouncer_dist_config, start_link, []},
                restart => permanent,

@@ -3,12 +3,12 @@
 
 -export([
     create_config_table/0,
+    load_settings/0,
     start_link/0,
     configure_node/1,
     get/1,
     connection_settings/0,
     key_info/0,
-    key_info/1,
     node_name/0,
     limit_handle/0
 ]).
@@ -24,6 +24,22 @@
 create_config_table() ->
     _ = ets:new(?TABLE, [set, public, named_table, {read_concurrency, true}]).
 
+load_settings() ->
+    case bouncer_settings:parse() of
+        {ok, Parsed} ->
+            LimitHandle = bouncer_limit:new(maps:get(max_pending, Parsed)),
+            Values = maps:merge(maps:without([key_options, hs_opts], Parsed),
+                                maps:get(hs_opts, Parsed)),
+            Published = maps:merge(Values, maps:get(key_options, Parsed)),
+            true = ets:insert(?TABLE, [{limit_handle, LimitHandle} |
+                                       maps:to_list(Published)]),
+            ok;
+        {error, Reason} ->
+            logger:error("bouncer distribution settings are invalid: ~p",
+                         [Reason]),
+            {error, Reason}
+    end.
+
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -38,27 +54,13 @@ connection_settings() ->
                 sender_policy, receiver_policy],
     HandshakeKeys = [handshake_timeout_ms, send_timeout_ms, max_pending, suite,
                      accept_suites, own_name, node_name, limit_handle],
-    case table_value(config_generation) of
-        {ok, Generation} ->
-            case setting_values(BaseKeys ++ HandshakeKeys) of
-                {ok, Values} ->
-                    case optional_setting_values([dir, generate,
-                                                  authorized_dirs]) of
-                        {ok, KeyOptions} ->
-                            case table_value(config_generation) of
-                                {ok, Generation} ->
-                                    HsOpts = maps:merge(
-                                               maps:with(HandshakeKeys, Values),
-                                               KeyOptions),
-                                    {ok, (maps:with(BaseKeys, Values))#{
-                                           config_generation => Generation,
-                                           hs_opts => HsOpts}};
-                                _ ->
-                                    {error, not_ready}
-                            end;
-                        {error, _} = Error ->
-                            Error
-                    end;
+    case setting_values(lists:usort(BaseKeys ++ HandshakeKeys)) of
+        {ok, Values} ->
+            case optional_setting_values([dir, generate, authorized_dirs]) of
+                {ok, KeyOptions} ->
+                    HsOpts = maps:merge(maps:with(HandshakeKeys, Values),
+                                        KeyOptions),
+                    {ok, (maps:with(BaseKeys, Values))#{hs_opts => HsOpts}};
                 {error, _} = Error ->
                     Error
             end;
@@ -68,9 +70,6 @@ connection_settings() ->
 
 key_info() ->
     call(key_info).
-
-key_info(Generation) ->
-    call({key_info, Generation}).
 
 node_name() ->
     table_value(node_name).
@@ -83,32 +82,18 @@ init([]) ->
     %% this state from sys:get_state/1.
     process_flag(sensitive, true),
 
-    true = ets:delete_all_objects(?TABLE),
-    case bouncer_settings:parse() of
-        {ok, Parsed} ->
-            LimitHandle = bouncer_limit:new(maps:get(max_pending, Parsed)),
-            Values = maps:merge(maps:without([key_options, hs_opts], Parsed),
-                                maps:get(hs_opts, Parsed)),
-            Published = maps:merge(Values, maps:get(key_options, Parsed)),
-            true = ets:insert(?TABLE, [{limit_handle, LimitHandle} |
-                                       maps:to_list(Published)]),
-            State0 = #state{},
-            case current_node_name() of
-                undefined ->
-                    {ok, State0};
-                NodeName ->
-                    case load_node(NodeName, State0) of
-                        {ok, State1} -> {ok, State1};
-                        {error, Reason} ->
-                            logger:error("bouncer distribution config failed: ~p",
-                                         [Reason]),
-                            {stop, Reason}
-                    end
-            end;
-        {error, Reason} ->
-            logger:error("bouncer distribution settings are invalid: ~p",
-                         [Reason]),
-            {stop, Reason}
+    State0 = #state{},
+    case current_node_name() of
+        undefined ->
+            {ok, State0};
+        NodeName ->
+            case load_node(NodeName, State0) of
+                {ok, State1} -> {ok, State1};
+                {error, Reason} ->
+                    logger:error("bouncer distribution config failed: ~p",
+                                 [Reason]),
+                    {stop, Reason}
+            end
     end.
 
 handle_call({configure_node, NodeName}, _From, State) ->
@@ -127,16 +112,6 @@ handle_call(key_info, _From, #state{key_info = undefined} = State) ->
     {reply, {error, not_ready}, State};
 handle_call(key_info, _From, #state{key_info = KeyInfo} = State) ->
     {reply, {ok, KeyInfo}, State};
-handle_call({key_info, _Generation}, _From,
-            #state{key_info = undefined} = State) ->
-    {reply, {error, not_ready}, State};
-handle_call({key_info, Generation}, _From,
-            #state{key_info = KeyInfo} = State) ->
-    case table_value(config_generation) of
-        {ok, Generation} -> {reply, {ok, KeyInfo}, State};
-        {ok, _} -> {reply, {error, stale_configuration}, State};
-        {error, _} = Error -> {reply, Error, State}
-    end;
 handle_call(_Request, _From, State) ->
     {reply, {error, bad_request}, State}.
 
@@ -163,11 +138,9 @@ load_node(NodeName, State) ->
 load_node_key(NodeName, KeyOptions, State) ->
     case bouncer_keys:load_or_generate(NodeName, KeyOptions) of
         {ok, KeyInfo} ->
-            Generation = make_ref(),
             Fingerprint = bouncer_keys:fingerprint(KeyInfo),
             true = ets:insert(?TABLE, [{node_name, NodeName},
                                        {own_name, NodeName},
-                                       {config_generation, Generation},
                                        {fingerprint, Fingerprint}]),
             {ok, Suite} = table_value(suite),
             {ok, AcceptSuites} = table_value(accept_suites),
