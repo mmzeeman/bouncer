@@ -67,7 +67,7 @@ respond(Socket, OwnName, Keys, Opts) ->
                         finish(Socket, Error)
                 end
             after
-                bouncer_limit:release()
+                bouncer_limit:release(Opts)
             end;
         {error, busy} ->
             gen_tcp:close(Socket),

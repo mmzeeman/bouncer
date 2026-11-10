@@ -368,7 +368,8 @@ initiator_opts(Name, AuthDir, Suite) ->
       suite => Suite, accept_suites => [Suite]}.
 
 responder_opts(Name, AuthDir, Suite) ->
-    #{node_name => Name, authorized_dirs => [AuthDir], accept_suites => [Suite]}.
+    #{node_name => Name, authorized_dirs => [AuthDir], accept_suites => [Suite],
+      limit_handle => bouncer_limit:new(64)}.
 
 start_responder(Name, Keys, Opts) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {packet, 0}, {active, false},

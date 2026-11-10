@@ -218,6 +218,36 @@ Values can be provided as `-bouncer Key Value` arguments or through matching
 `BOUNCER_KEY` environment variables. Explicit options take precedence over
 flags, flags over environment, and environment over defaults. Invalid values
 make distribution startup fail with the setting name and accepted values.
+
+The distribution module's `childspecs/0` starts `bouncer_dist_sup` under
+`net_sup` before `net_kernel` and before applications are started. Its
+`bouncer_dist_config` child parses settings without using the `bouncer`
+application or application environment. Since the node name is not available
+when that child first starts, `listen/2` supplies the name and the config
+process loads the corresponding key before opening the listener. If the config
+process later restarts, it rebuilds settings from the startup flags and
+environment and reloads the key for the running node name.
+
+Effective non-secret settings and the pending-handshake counters handle are
+published as individual key/value entries in a protected, read-concurrent ETS
+table owned by the config process. `bouncer_dist_config:get/1` retrieves
+one value at a time; distribution workers assemble only the settings they need
+for each handshake. The key-info map, including the secret-key accessor, stays
+only in the config process state and is fetched once per handshake; it is not
+placed in ETS or the process dictionary. A missing table or unavailable config during
+restart is treated as not-ready, so a handshake fails closed rather than using
+empty or default options. The process is marked sensitive to limit tracing and
+`process_info` exposure; this does not hide its state from `sys:get_state/1`.
+Established connections are not children of the config supervisor and continue
+using their already-initialized transport state; new handshakes fail closed
+until the config child has rebuilt its ETS data.
+
+This follows the `inet_tls_dist` startup pattern: the carrier exports
+`childspecs/0`, the distribution supervisor starts before `net_kernel`, and
+runtime readers consult protected ETS settings. The difference is that TLS
+loads server/client settings from `-ssl_dist_optfile` in its supervisor, while
+Bouncer combines `-bouncer` flags, `BOUNCER_*` values and defaults, then waits
+until `listen/2` supplies the node name before loading the identity key.
 Transport policy options include `chunk_size`, `padding`, `compression`,
 `rekey_after`, `max_packet`, `accept_compression`, and
 `max_bytes_without_rekey`. Carrier options are `handshake_timeout_ms` (5000),

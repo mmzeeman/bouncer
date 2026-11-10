@@ -2,19 +2,22 @@
 -module(bouncer_dist).
 
 -export([
-     listen/1,
-     listen/2,
-     accept/1,
-     accept_connection/5,
-     setup/5,
-     close/1,
-     select/1,
-     address/0,
-     is_node_name/1
+    childspecs/0,
+    listen/1,
+    listen/2,
+    accept/1,
+    accept_connection/5,
+    setup/5,
+    close/1,
+    select/1,
+    address/0,
+    is_node_name/1
 ]).
 
 -export([
+    accept_loop/3,
     do_accept/6,
+    do_accept/7,
     do_setup/6,
 
     start_reader/4,
@@ -27,7 +30,6 @@
 -include_lib("kernel/include/net_address.hrl").
 -include_lib("kernel/include/dist_util.hrl").
 
--define(SETTINGS, {?MODULE, settings}).
 -define(DRAIN_MAX_PACKETS, 64).
 -define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
 
@@ -52,48 +54,94 @@ listen(Name) ->
 -spec listen(atom() | binary() | string(), atom() | binary() | string()) -> term().
 listen(Name, Host) ->
     NodeName = node_name(Name, Host),
-    FlagSettings = argument_settings(),
-    EnvSettings = environment_settings(),
-    KeySettings = effective_key_settings(FlagSettings, EnvSettings, NodeName),
-    case bouncer_keys:load_or_generate(NodeName, KeySettings) of
-        {ok, Keys} ->
-            case validate_settings(FlagSettings, EnvSettings, Keys, NodeName) of
-                {ok, Settings} ->
-                    persistent_term:put(?SETTINGS, Settings),
-                    logger:notice("bouncer_dist: suite=~p accept_suites=~p fingerprint=~ts",
-                                  [maps:get(suite, Settings),
-                                   maps:get(accept_suites, Settings),
-                                   bouncer_keys:fingerprint(Keys)]),
-                    inet_tcp_dist:listen(Name, Host);
-                {error, _} = Error ->
-                    Error
-            end;
+    case bouncer_dist_config:configure_node(NodeName) of
+        ok ->
+            inet_tcp_dist:listen(Name, Host);
         {error, _} = Error ->
             Error
     end.
 
+childspecs() ->
+    bouncer_dist_sup:childspecs().
+
 -spec accept(term()) -> term().
-accept(Listen) ->
-    inet_tcp_dist:accept(Listen).
+accept(ListenSocket) ->
+    case worker_settings() of
+        {ok, Settings} ->
+            spawn_opt(?MODULE, accept_loop, [self(), ListenSocket, Settings],
+                      [link, {priority, max}]);
+        {error, Reason} ->
+            exit(Reason)
+    end.
+
+accept_loop(Kernel, ListenSocket, Settings) ->
+    case gen_tcp:accept(ListenSocket) of
+        {ok, Socket} ->
+            Kernel ! {accept, self(), Socket, inet, tcp},
+            Settings1 = accept_controller(Kernel, Socket, Settings),
+            accept_loop(Kernel, ListenSocket, Settings1);
+        Error ->
+            exit(Error)
+    end.
+
+accept_controller(Kernel, Socket, Settings) ->
+    receive
+        {bouncer_settings_request, Pid} ->
+            case worker_settings() of
+                {ok, CurrentSettings} ->
+                    Pid ! {bouncer_settings, self(), CurrentSettings},
+                    accept_controller(Kernel, Socket, CurrentSettings);
+                {error, Reason} ->
+                    Pid ! {bouncer_settings_error, self(), Reason},
+                    accept_controller(Kernel, Socket, Settings)
+            end;
+        {Kernel, controller, Pid} ->
+            case gen_tcp:controlling_process(Socket, Pid) of
+                ok ->
+                    Pid ! {self(), controller},
+                    Settings;
+                {error, Reason} ->
+                    Pid ! {self(), exit},
+                    exit({controlling_process, Reason})
+            end;
+        {Kernel, unsupported_protocol} ->
+            exit(unsupported_protocol)
+    end.
 
 -spec accept_connection(pid(), term(), atom(), term(), term()) -> term().
 accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
+    AcceptPid ! {bouncer_settings_request, self()},
+    Settings =
+        receive
+            {bouncer_settings, AcceptPid, Settings0} ->
+                {ok, Settings0};
+            {bouncer_settings_error, AcceptPid, Reason} ->
+                {error, Reason}
+        after SetupTime ->
+            {error, settings_not_initialized}
+        end,
     spawn_opt(?MODULE, do_accept,
-              [self(), AcceptPid, Socket, MyNode, Allowed, SetupTime],
+              [self(), AcceptPid, Socket, MyNode, Allowed, SetupTime, Settings],
               dist_util:net_ticker_spawn_options()).
 
 -spec do_accept(pid(), pid(), term(), atom(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
+    do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime,
+              worker_settings()).
+
+-spec do_accept(pid(), pid(), term(), atom(), term(), term(), term()) -> term().
+do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime, SettingsResult) ->
     receive
         {AcceptPid, controller} ->
-            case settings() of
-                {ok, Settings} ->
-                    case inet:setopts(Socket, socket_options(Settings)) of
-                        ok ->
-                            accept_handshake(Kernel, Socket, MyNode, Allowed,
-                                             SetupTime, Settings);
+            case SettingsResult of
+                {ok, #{config_generation := Generation} = Settings} ->
+                    case bouncer_dist_config:key_info(Generation) of
+                        {ok, Keys} ->
+                            do_accept_socket(Kernel, Socket, MyNode,
+                                             Allowed, SetupTime,
+                                             Settings, Keys);
                         {error, Reason} ->
-                            stop_connection(MyNode, {socket_options, Reason})
+                            stop_connection(MyNode, Reason)
                     end;
                 {error, Reason} ->
                     stop_connection(MyNode, Reason)
@@ -102,7 +150,17 @@ do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
             stop_connection(MyNode, {accept_handover_failed, Reason})
     end.
 
-accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime, #{ keys := Keys, node_name := OwnName, hs_opts := HsOptions } = Settings) ->
+do_accept_socket(Kernel, Socket, MyNode, Allowed, SetupTime, Settings, Keys) ->
+    case inet:setopts(Socket, socket_options(Settings)) of
+        ok ->
+            accept_handshake(Kernel, Socket, MyNode, Allowed,
+                             SetupTime, Settings, Keys);
+        {error, Reason} ->
+            stop_connection(MyNode, {socket_options, Reason})
+    end.
+
+accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime,
+                 #{node_name := OwnName, hs_opts := HsOptions} = Settings, Keys) ->
     Timer = dist_util:start_timer(SetupTime),
     case bouncer_hs:respond(Socket, OwnName, Keys, HsOptions) of
         {ok, Result} ->
@@ -119,16 +177,22 @@ setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
 
 -spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    case settings() of
-        {ok, Settings} ->
-            setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames,
-                             SetupTime, Settings);
+    case worker_settings() of
+        {ok, #{config_generation := Generation} = Settings} ->
+            case bouncer_dist_config:key_info(Generation) of
+                {ok, Keys} ->
+                    setup_connection(Kernel, Node, Type, MyNode,
+                                     LongOrShortNames, SetupTime, Settings,
+                                     Keys);
+                {error, Reason} ->
+                    stop_connection(Node, Reason)
+            end;
         {error, Reason} ->
             stop_connection(Node, Reason)
     end.
 
 setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
-                 Settings) ->
+                 Settings, Keys) ->
     Timer = dist_util:start_timer(SetupTime),
     try inet_tcp_dist:fam_setup(inet, Node, LongOrShortNames,
                                 fun inet:parse_address/1) of
@@ -139,7 +203,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
                     InitiateOpts = maps:get(hs_opts, Settings),
                     TargetName = atom_to_binary(Node, utf8),
                     case bouncer_hs:initiate(Socket, TargetName,
-                                             maps:get(keys, Settings),
+                                             Keys,
                                              InitiateOpts) of
                         {ok, Result} ->
                             start_dist_handshake(Kernel, Socket, MyNode, Node, undefined, Timer, Settings, Result, {initiator, NetAddress, Type, Version});
@@ -566,16 +630,12 @@ do_expected_name_check(Expected, Actual, _Packet) ->
     {error, {authenticated_name_mismatch, Expected, Actual}}.
 
 maybe_log_unauthorized({initiator, _NetAddress, _Type, _Version}, Result) ->
-    Fingerprint = bouncer_keys:fingerprint(maps:get(keys, settings_value())),
+    Fingerprint = identity_fingerprint(),
     logger:warning("peer closed the connection during handshake; our key is probably not authorized there: ~p ~ts",
                    [maps:get(remote_name, Result), Fingerprint]);
 maybe_log_unauthorized(_, _) ->
     ok.
 
-
-settings_value() ->
-    {ok, Settings} = settings(),
-    Settings.
 
 -spec tick(pid()) -> ok.
 tick(Controller) when is_pid(Controller) ->
@@ -647,12 +707,7 @@ is_node_name(Node) ->
 
 -spec stop_connection(term(), term()) -> no_return().
 stop_connection(Node, Reason) ->
-    Fingerprint = case settings() of
-                      {ok, Settings} ->
-                          bouncer_keys:fingerprint(maps:get(keys, Settings));
-                      _ ->
-                          "unavailable"
-                  end,
+    Fingerprint = identity_fingerprint(),
     logger:warning("bouncer_dist: connection failed node=~p fingerprint=~ts reason=~p",
                    [Node, Fingerprint, Reason]),
     dist_util:shutdown(?MODULE, ?LINE, {Node, Reason}).
@@ -666,9 +721,9 @@ log_io_error(NodeName, Reason) ->
                    [NodeName, identity_fingerprint(), Reason]).
 
 identity_fingerprint() ->
-    case settings() of
-        {ok, Settings} ->
-            bouncer_keys:fingerprint(maps:get(keys, Settings));
+    case bouncer_dist_config:get(fingerprint) of
+        {ok, Fingerprint} ->
+            Fingerprint;
         _ ->
             "unavailable"
     end.
@@ -684,13 +739,40 @@ socket_options(Settings) ->
      {send_timeout, maps:get(send_timeout_ms, Settings)},
      {send_timeout_close, true}].
 
-settings() ->
-    case persistent_term:get(?SETTINGS, undefined) of
-        undefined ->
-            {error, settings_not_initialized};
-        Settings ->
-            {ok, Settings}
+worker_settings() ->
+    BaseKeys = [node_name, config_generation, fingerprint, send_timeout_ms,
+                sender_policy, receiver_policy],
+    HandshakeKeys = [handshake_timeout_ms, send_timeout_ms, max_pending, suite,
+                     accept_suites, own_name, node_name, limit_handle],
+    OptionalKeyOptions = [dir, generate, authorized_dirs],
+    case setting_values(BaseKeys ++ HandshakeKeys) of
+        {ok, Values} ->
+            KeyOptions = optional_setting_values(OptionalKeyOptions),
+            HsOpts = maps:merge(maps:with(HandshakeKeys, Values), KeyOptions),
+            {ok, (maps:with(BaseKeys, Values))#{hs_opts => HsOpts}};
+        {error, _} = Error ->
+            Error
     end.
+
+setting_values(Keys) ->
+    lists:foldl(
+      fun(Key, {ok, Acc}) ->
+              case bouncer_dist_config:get(Key) of
+                  {ok, Value} -> {ok, Acc#{Key => Value}};
+                  {error, _} = Error -> Error
+              end;
+         (_Key, {error, _} = Error) ->
+              Error
+      end, {ok, #{}}, Keys).
+
+optional_setting_values(Keys) ->
+    lists:foldl(
+      fun(Key, Acc) ->
+              case bouncer_dist_config:get(Key) of
+                  {ok, Value} -> Acc#{Key => Value};
+                  {error, not_ready} -> Acc
+              end
+      end, #{}, Keys).
 
 node_name(Name, Host) ->
     NameBin = to_binary(Name),
@@ -703,198 +785,3 @@ to_binary(Value) when is_binary(Value) ->
     Value;
 to_binary(Value) when is_list(Value) ->
     unicode:characters_to_binary(Value).
-
-argument_settings() ->
-    case init:get_argument(bouncer) of
-        {ok, Groups} ->
-            lists:foldl(fun add_argument_group/2, #{}, Groups);
-        error ->
-            #{}
-    end.
-
-add_argument_group(Group, Acc) ->
-    add_argument_pairs(Group, Acc).
-
-add_argument_pairs([Key, Value | Rest], Acc) ->
-    Acc1 = case maps:is_key(Key, Acc) of
-               true -> Acc;
-               false -> maps:put(Key, Value, Acc)
-           end,
-    add_argument_pairs(Rest, Acc1);
-add_argument_pairs(_, Acc) ->
-    Acc.
-
-environment_settings() ->
-    Keys = ["dir", "generate", "authorized_dirs", "chunk_size", "padding",
-            "compression", "rekey_after", "max_packet", "accept_compression",
-            "max_bytes_without_rekey", "handshake_timeout_ms", "suite",
-            "accept_suites", "max_pending", "send_timeout_ms"],
-    lists:foldl(fun(Key, Acc) ->
-                        case os:getenv("BOUNCER_" ++ string:uppercase(Key)) of
-                            false -> Acc;
-                            "" -> Acc;
-                            Value -> maps:put(Key, Value, Acc)
-                        end
-                end, #{}, Keys).
-
-key_option_settings(Flags, Env) ->
-    lists:foldl(fun({StringKey, AtomKey}, Acc) ->
-                        case effective(StringKey, Flags, Env, undefined) of
-                            undefined -> Acc;
-                            Value -> maps:put(AtomKey, Value, Acc)
-                        end
-                end, #{}, [{"dir", dir}, {"generate", generate},
-                           {"authorized_dirs", authorized_dirs}]).
-
-effective_key_settings(Flags, Env, NodeName) ->
-    maps:merge(#{node_name => NodeName},
-               key_option_settings(Flags, Env)).
-
-validate_settings(Flags, Env, Keys, NodeName) ->
-    Opts = #{},
-    Layers = [Opts, policy_layer(Flags), policy_layer(Env)],
-    case {bouncer_protocol:sender_policy(Layers),
-          bouncer_protocol:receiver_policy(Layers),
-          carrier_values(Flags, Env, NodeName, Keys)}
-    of
-        {{ok, SenderPolicy}, {ok, ReceiverPolicy}, {ok, Carrier}} ->
-            {ok, Carrier#{sender_policy => SenderPolicy,
-                          receiver_policy => ReceiverPolicy}};
-        {{error, Reason}, _, _} -> {error, Reason};
-        {_, {error, Reason}, _} -> {error, Reason};
-        {_, _, {error, _} = Error} -> Error
-    end.
-
-carrier_values(Flags, Env, NodeName, Keys) ->
-    Values = [{handshake_timeout_ms, effective("handshake_timeout_ms", Flags, Env,
-                                                "5000"), 5000,
-               "a positive integer"},
-              {send_timeout_ms, effective("send_timeout_ms", Flags, Env, "30000"),
-               30000, "a positive integer"},
-              {max_pending, effective("max_pending", Flags, Env, "64"), 64,
-               "a positive integer"}],
-    case parse_positive_values(Values, #{}) of
-        {ok, Parsed} ->
-            case parse_suite(effective("suite", Flags, Env, "aesgcm_sha512")) of
-                {ok, Suite} ->
-                    case parse_suites(effective("accept_suites", Flags, Env,
-                                                "aesgcm_sha512")) of
-                        {ok, AcceptSuites} ->
-                            KeyOptions = key_option_settings(Flags, Env),
-                            HsOpts = maps:merge(
-                                       Parsed#{own_name => NodeName, suite => Suite,
-                                               accept_suites => AcceptSuites,
-                                               node_name => NodeName},
-                                       KeyOptions),
-                            {ok, #{keys => Keys, node_name => NodeName,
-                                   suite => Suite, accept_suites => AcceptSuites,
-                                   hs_opts => HsOpts,
-                                   send_timeout_ms => maps:get(send_timeout_ms,
-                                                               Parsed)}};
-                        {error, _} = Error -> Error
-                    end;
-                {error, _} = Error -> Error
-            end;
-        {error, _} = Error -> Error
-    end.
-
-parse_positive_values([], Acc) ->
-    {ok, Acc};
-parse_positive_values([{Key, Value, Default, Allowed} | Rest], Acc) ->
-    case positive_integer(Value) of
-        {ok, Integer} ->
-            parse_positive_values(Rest, maps:put(Key, Integer, Acc));
-        error ->
-            case Value of
-                undefined ->
-                    parse_positive_values(Rest, maps:put(Key, Default, Acc));
-                _ ->
-                    {error, {invalid_setting, Key, Value, Allowed}}
-            end
-    end.
-
-positive_integer(Value) when is_integer(Value), Value > 0 ->
-    {ok, Value};
-positive_integer(Value) when is_list(Value); is_binary(Value) ->
-    try string:to_integer(to_list(Value)) of
-        {Integer, ""} when Integer > 0 -> {ok, Integer};
-        _ -> error
-    catch
-        _:_ -> error
-    end;
-positive_integer(_) ->
-    error.
-
-parse_suite(Value) ->
-    case suite_atom(Value) of
-        {ok, _} = Ok -> Ok;
-        error ->
-            {error, {invalid_setting, suite, Value,
-                     "chachapoly_blake2b | aesgcm_sha512 | aesgcm_sha256 | aesgcm_blake2b"}}
-    end.
-
-parse_suites(Value) when is_list(Value), Value =/= [], is_atom(hd(Value)) ->
-    case lists:all(fun(S) -> suite_atom(S) =/= error end, Value) of
-        true -> {ok, Value};
-        false -> invalid_suites(Value)
-    end;
-parse_suites(Value) when is_list(Value); is_binary(Value) ->
-    Names = [string:trim(Name) || Name <- string:split(to_list(Value), ",", all)],
-    case Names =/= [] andalso lists:all(fun(Name) -> Name =/= "" end, Names) of
-        true ->
-            case [Suite || Name <- Names, {ok, Suite} <- [suite_atom(Name)]] of
-                Suites when length(Suites) =:= length(Names) -> {ok, Suites};
-                _ -> invalid_suites(Value)
-            end;
-        false -> invalid_suites(Value)
-    end;
-parse_suites(Value) ->
-    invalid_suites(Value).
-
-suite_atom(chachapoly_blake2b) -> {ok, chachapoly_blake2b};
-suite_atom(aesgcm_sha512) -> {ok, aesgcm_sha512};
-suite_atom(aesgcm_sha256) -> {ok, aesgcm_sha256};
-suite_atom(aesgcm_blake2b) -> {ok, aesgcm_blake2b};
-suite_atom("chachapoly_blake2b") -> {ok, chachapoly_blake2b};
-suite_atom("aesgcm_sha512") -> {ok, aesgcm_sha512};
-suite_atom("aesgcm_sha256") -> {ok, aesgcm_sha256};
-suite_atom("aesgcm_blake2b") -> {ok, aesgcm_blake2b};
-suite_atom(<<"chachapoly_blake2b">>) -> {ok, chachapoly_blake2b};
-suite_atom(<<"aesgcm_sha512">>) -> {ok, aesgcm_sha512};
-suite_atom(<<"aesgcm_sha256">>) -> {ok, aesgcm_sha256};
-suite_atom(<<"aesgcm_blake2b">>) -> {ok, aesgcm_blake2b};
-suite_atom(_) -> error.
-
-invalid_suites(Value) ->
-    {error, {invalid_setting, accept_suites, Value,
-             "comma-separated suite names from chachapoly_blake2b, aesgcm_sha512, aesgcm_sha256, aesgcm_blake2b"}}.
-
-effective(Key, Flags, Env, Default) ->
-    case maps:find(Key, Flags) of
-        {ok, Value} -> Value;
-        error ->
-            case maps:find(Key, Env) of
-                {ok, Value} -> Value;
-                error -> Default
-            end
-    end.
-
-policy_layer(Settings) ->
-    lists:foldl(fun({StringKey, AtomKey}, Acc) ->
-                        case maps:find(StringKey, Settings) of
-                            {ok, Value} -> maps:put(AtomKey, Value, Acc);
-                            error -> Acc
-                        end
-                end, #{},
-                [{"chunk_size", chunk_size},
-                 {"padding", padding},
-                 {"compression", compression},
-                 {"rekey_after", rekey_after},
-                 {"max_packet", max_packet},
-                 {"accept_compression", accept_compression},
-                 {"max_bytes_without_rekey", max_bytes_without_rekey}]).
-
-to_list(Value) when is_binary(Value) ->
-    unicode:characters_to_list(Value);
-to_list(Value) when is_list(Value) ->
-    Value.
