@@ -302,6 +302,9 @@ logs_do_not_contain_secret_key(Config) ->
 config_restart(Config) ->
     PeerA = ?config(peer_a, Config),
     NodeB = ?config(node_b, Config),
+    {ok, OldSettings} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    OldGeneration = maps:get(config_generation, OldSettings),
     OldPid = peer:call(PeerA, erlang, whereis, [bouncer_dist_config]),
     ?assert(is_pid(OldPid)),
     _ = peer:call(PeerA, erlang, exit, [OldPid, kill]),
@@ -309,6 +312,12 @@ config_restart(Config) ->
                                   erlang:monotonic_time(millisecond) + 10000),
     ?assert(is_pid(NewPid)),
     ?assertNotEqual(OldPid, NewPid),
+    {ok, NewSettings} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    ?assertNotEqual(OldGeneration, maps:get(config_generation, NewSettings)),
+    ?assertEqual({error, stale_configuration},
+                 peer:call(PeerA, bouncer_dist_config, key_info,
+                           [OldGeneration])),
     _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     ok.
@@ -324,6 +333,9 @@ isolated_settings(Config) ->
     {ok, DirB} = peer:call(PeerB, bouncer_dist_config, get, [dir]),
     {ok, SettingsA} =
         peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    ?assertEqual([{connection_settings, SettingsA}],
+                 peer:call(PeerA, ets, lookup,
+                           [bouncer_dist_config, connection_settings])),
     ?assertEqual(atom_to_binary(NodeA, utf8), maps:get(node_name, SettingsA)),
     ?assertEqual(SuiteA, maps:get(suite, maps:get(hs_opts, SettingsA))),
     ?assertMatch({ok, _},

@@ -233,10 +233,10 @@ process later restarts, it rebuilds settings from the startup flags and
 environment and reloads the key for the running node name.
 
 Effective non-secret settings and the pending-handshake counters handle are
-published as individual key/value entries in a protected, read-concurrent ETS
-table owned by the config process. `bouncer_dist_config:get/1` retrieves
-one value at a time; distribution workers assemble only the settings they need
-for each handshake. The key-info map, including the secret-key accessor, stays
+published as individual key/value entries in a public, read-concurrent ETS
+table owned by the distribution supervisor. `bouncer_dist_config:get/1` retrieves
+one value at a time; `connection_settings/0` reads a single ETS entry containing
+a consistent snapshot for connection setup. The key-info map, including the secret-key accessor, stays
 only in the config process state and is fetched once per handshake; it is not
 placed in ETS or the process dictionary. A missing table or unavailable config during
 restart is treated as not-ready, so a handshake fails closed rather than using
@@ -248,7 +248,7 @@ until the config child has rebuilt its ETS data.
 
 This follows the `inet_tls_dist` startup pattern: the carrier exports
 `childspecs/0`, the distribution supervisor starts before `net_kernel`, and
-runtime readers consult protected ETS settings. The difference is that TLS
+runtime readers consult ETS settings. The difference is that TLS
 loads server/client settings from `-ssl_dist_optfile` in its supervisor, while
 Bouncer combines `-bouncer` flags, `BOUNCER_*` values and defaults, then waits
 until `listen/2` supplies the node name before loading the identity key.

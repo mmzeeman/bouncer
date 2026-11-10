@@ -38,7 +38,7 @@ get(Key) ->
     table_value(Key).
 
 connection_settings() ->
-    call(connection_settings).
+    table_value(connection_settings).
 
 key_info() ->
     call(key_info).
@@ -90,13 +90,6 @@ handle_call({configure_node, NodeName}, _From, State) ->
         {error, Reason} ->
             {reply, {error, Reason}, State}
     end;
-handle_call(connection_settings, _From,
-            #state{settings = undefined} = State) ->
-    {reply, {error, not_ready}, State};
-handle_call(connection_settings, _From, #state{settings = Settings} = State) ->
-    Keys = [node_name, config_generation, fingerprint, send_timeout_ms,
-            sender_policy, receiver_policy, hs_opts],
-    {reply, {ok, maps:with(Keys, Settings)}, State};
 handle_call(key_info, _From, #state{key_info = undefined} = State) ->
     {reply, {error, not_ready}, State};
 handle_call(key_info, _From, #state{key_info = KeyInfo} = State) ->
@@ -141,7 +134,13 @@ load_node(NodeName, #state{parsed = Parsed, limit_handle = LimitHandle} = State)
             Published = maps:merge(
                           maps:without([key_options, hs_opts], Settings),
                           HsOpts),
-            true = ets:insert(?TABLE, maps:to_list(Published)),
+            SnapshotKeys = [node_name, config_generation, fingerprint,
+                            send_timeout_ms, sender_policy, receiver_policy,
+                            hs_opts],
+            Snapshot = maps:with(SnapshotKeys, Settings),
+            true = ets:insert(?TABLE,
+                              [{connection_settings, Snapshot} |
+                               maps:to_list(Published)]),
             logger:notice("bouncer_dist: suite=~p accept_suites=~p fingerprint=~ts",
                           [maps:get(suite, Settings),
                            maps:get(accept_suites, Settings),
