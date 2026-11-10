@@ -413,15 +413,27 @@ collect_startup_output(Port, Acc) ->
 await_config_restart(Peer, OldPid, Deadline) ->
     case peer:call(Peer, erlang, whereis, [bouncer_dist_config]) of
         Pid when is_pid(Pid), Pid =/= OldPid ->
-            Pid;
+            case peer:call(Peer, bouncer_dist_config, key_info, []) of
+                {ok, _} ->
+                    case peer:call(Peer, erlang, whereis,
+                                   [bouncer_dist_config]) of
+                        Pid -> Pid;
+                        _ -> await_config_restart_retry(Peer, OldPid, Deadline)
+                    end;
+                {error, not_ready} ->
+                    await_config_restart_retry(Peer, OldPid, Deadline)
+            end;
         _ ->
-            case erlang:monotonic_time(millisecond) < Deadline of
-                true ->
-                    timer:sleep(25),
-                    await_config_restart(Peer, OldPid, Deadline);
-                false ->
-                    ct:fail(config_process_did_not_restart)
-            end
+            await_config_restart_retry(Peer, OldPid, Deadline)
+    end.
+
+await_config_restart_retry(Peer, OldPid, Deadline) ->
+    case erlang:monotonic_time(millisecond) < Deadline of
+        true ->
+            timer:sleep(25),
+            await_config_restart(Peer, OldPid, Deadline);
+        false ->
+            ct:fail(config_process_did_not_restart)
     end.
 
 get_value(Key) ->
