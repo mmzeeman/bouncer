@@ -333,11 +333,25 @@ isolated_settings(Config) ->
     {ok, DirB} = peer:call(PeerB, bouncer_dist_config, get, [dir]),
     {ok, SettingsA} =
         peer:call(PeerA, bouncer_dist_config, connection_settings, []),
-    ?assertEqual([{connection_settings, SettingsA}],
+    ?assertEqual([],
                  peer:call(PeerA, ets, lookup,
                            [bouncer_dist_config, connection_settings])),
     ?assertEqual(atom_to_binary(NodeA, utf8), maps:get(node_name, SettingsA)),
     ?assertEqual(SuiteA, maps:get(suite, maps:get(hs_opts, SettingsA))),
+    SendTimeout = maps:get(send_timeout_ms, SettingsA),
+    try
+        true = peer:call(PeerA, ets, insert,
+                         [bouncer_dist_config, {send_timeout_ms, 1234}]),
+        {ok, ChangedSettings} =
+            peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+        ?assertEqual(1234, maps:get(send_timeout_ms, ChangedSettings)),
+        ?assertEqual(1234, maps:get(send_timeout_ms,
+                                    maps:get(hs_opts, ChangedSettings)))
+    after
+        true = peer:call(PeerA, ets, insert,
+                         [bouncer_dist_config,
+                          {send_timeout_ms, SendTimeout}])
+    end,
     ?assertMatch({ok, _},
                  peer:call(PeerA, bouncer_dist_config, key_info,
                            [maps:get(config_generation, SettingsA)])),

@@ -235,8 +235,9 @@ environment and reloads the key for the running node name.
 Effective non-secret settings and the pending-handshake counters handle are
 published as individual key/value entries in a public, read-concurrent ETS
 table owned by the distribution supervisor. `bouncer_dist_config:get/1` retrieves
-one value at a time; `connection_settings/0` reads a single ETS entry containing
-a consistent snapshot for connection setup. The key-info map, including the secret-key accessor, stays
+one value at a time; `connection_settings/0` assembles a connection snapshot
+from individual ETS entries and checks its configuration generation. The key-info
+map, including the secret-key accessor, stays
 only in the config process state and is fetched once per handshake; it is not
 placed in ETS or the process dictionary. A missing table or unavailable config during
 restart is treated as not-ready, so a handshake fails closed rather than using

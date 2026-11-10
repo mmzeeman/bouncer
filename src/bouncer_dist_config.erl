@@ -18,11 +18,7 @@
 -define(TABLE, bouncer_dist_config).
 
 -record(state, {
-    parsed,
-    node_name = undefined,
-    key_info = undefined,
-    settings = undefined,
-    limit_handle
+    key_info = undefined
 }).
 
 create_config_table() ->
@@ -38,7 +34,37 @@ get(Key) ->
     table_value(Key).
 
 connection_settings() ->
-    table_value(connection_settings).
+    BaseKeys = [node_name, fingerprint, send_timeout_ms,
+                sender_policy, receiver_policy],
+    HandshakeKeys = [handshake_timeout_ms, send_timeout_ms, max_pending, suite,
+                     accept_suites, own_name, node_name, limit_handle],
+    case table_value(config_generation) of
+        {ok, Generation} ->
+            case setting_values(BaseKeys ++ HandshakeKeys) of
+                {ok, Values} ->
+                    case optional_setting_values([dir, generate,
+                                                  authorized_dirs]) of
+                        {ok, KeyOptions} ->
+                            case table_value(config_generation) of
+                                {ok, Generation} ->
+                                    HsOpts = maps:merge(
+                                               maps:with(HandshakeKeys, Values),
+                                               KeyOptions),
+                                    {ok, (maps:with(BaseKeys, Values))#{
+                                           config_generation => Generation,
+                                           hs_opts => HsOpts}};
+                                _ ->
+                                    {error, not_ready}
+                            end;
+                        {error, _} = Error ->
+                            Error
+                    end;
+                {error, _} = Error ->
+                    Error
+            end;
+        {error, _} = Error ->
+            Error
+    end.
 
 key_info() ->
     call(key_info).
@@ -57,10 +83,16 @@ init([]) ->
     %% this state from sys:get_state/1.
     process_flag(sensitive, true),
 
+    true = ets:delete_all_objects(?TABLE),
     case bouncer_settings:parse() of
         {ok, Parsed} ->
             LimitHandle = bouncer_limit:new(maps:get(max_pending, Parsed)),
-            State0 = #state{parsed = Parsed, limit_handle = LimitHandle},
+            Values = maps:merge(maps:without([key_options, hs_opts], Parsed),
+                                maps:get(hs_opts, Parsed)),
+            Published = maps:merge(Values, maps:get(key_options, Parsed)),
+            true = ets:insert(?TABLE, [{limit_handle, LimitHandle} |
+                                       maps:to_list(Published)]),
+            State0 = #state{},
             case current_node_name() of
                 undefined ->
                     {ok, State0};
@@ -79,30 +111,32 @@ init([]) ->
             {stop, Reason}
     end.
 
-handle_call({configure_node, NodeName}, _From,
-            #state{node_name = NodeName, settings = Settings} = State)
-  when Settings =/= undefined ->
-    {reply, ok, State};
 handle_call({configure_node, NodeName}, _From, State) ->
-    case load_node(NodeName, State) of
-        {ok, State1} ->
-            {reply, ok, State1};
-        {error, Reason} ->
-            {reply, {error, Reason}, State}
+    case {table_value(node_name), State#state.key_info} of
+        {{ok, NodeName}, KeyInfo} when KeyInfo =/= undefined ->
+            {reply, ok, State};
+        _ ->
+            case load_node(NodeName, State) of
+                {ok, State1} ->
+                    {reply, ok, State1};
+                {error, Reason} ->
+                    {reply, {error, Reason}, State}
+            end
     end;
 handle_call(key_info, _From, #state{key_info = undefined} = State) ->
     {reply, {error, not_ready}, State};
 handle_call(key_info, _From, #state{key_info = KeyInfo} = State) ->
     {reply, {ok, KeyInfo}, State};
 handle_call({key_info, _Generation}, _From,
-            #state{settings = undefined} = State) ->
+            #state{key_info = undefined} = State) ->
     {reply, {error, not_ready}, State};
 handle_call({key_info, Generation}, _From,
-            #state{settings = #{config_generation := Generation},
-                   key_info = KeyInfo} = State) ->
-    {reply, {ok, KeyInfo}, State};
-handle_call({key_info, _Generation}, _From, State) ->
-    {reply, {error, stale_configuration}, State};
+            #state{key_info = KeyInfo} = State) ->
+    case table_value(config_generation) of
+        {ok, Generation} -> {reply, {ok, KeyInfo}, State};
+        {ok, _} -> {reply, {error, stale_configuration}, State};
+        {error, _} = Error -> {reply, Error, State}
+    end;
 handle_call(_Request, _From, State) ->
     {reply, {error, bad_request}, State}.
 
@@ -118,36 +152,28 @@ terminate(_Reason, _State) ->
 code_change(_OldVersion, State, _Extra) ->
     {ok, State}.
 
-load_node(NodeName, #state{parsed = Parsed, limit_handle = LimitHandle} = State) ->
-    KeyOptions = (maps:get(key_options, Parsed))#{node_name => NodeName},
+load_node(NodeName, State) ->
+    case optional_setting_values([dir, generate, authorized_dirs]) of
+        {ok, Options} ->
+            load_node_key(NodeName, Options#{node_name => NodeName}, State);
+        {error, _} = Error ->
+            Error
+    end.
+
+load_node_key(NodeName, KeyOptions, State) ->
     case bouncer_keys:load_or_generate(NodeName, KeyOptions) of
         {ok, KeyInfo} ->
             Generation = make_ref(),
-            HsOpts0 = maps:merge(maps:get(hs_opts, Parsed),
-                                 maps:get(key_options, Parsed)),
-            HsOpts = HsOpts0#{own_name => NodeName, node_name => NodeName,
-                              limit_handle => LimitHandle},
-            Settings = Parsed#{node_name => NodeName,
-                               config_generation => Generation,
-                               fingerprint => bouncer_keys:fingerprint(KeyInfo),
-                               hs_opts => HsOpts},
-            Published = maps:merge(
-                          maps:without([key_options, hs_opts], Settings),
-                          HsOpts),
-            SnapshotKeys = [node_name, config_generation, fingerprint,
-                            send_timeout_ms, sender_policy, receiver_policy,
-                            hs_opts],
-            Snapshot = maps:with(SnapshotKeys, Settings),
-            true = ets:insert(?TABLE,
-                              [{connection_settings, Snapshot} |
-                               maps:to_list(Published)]),
+            Fingerprint = bouncer_keys:fingerprint(KeyInfo),
+            true = ets:insert(?TABLE, [{node_name, NodeName},
+                                       {own_name, NodeName},
+                                       {config_generation, Generation},
+                                       {fingerprint, Fingerprint}]),
+            {ok, Suite} = table_value(suite),
+            {ok, AcceptSuites} = table_value(accept_suites),
             logger:notice("bouncer_dist: suite=~p accept_suites=~p fingerprint=~ts",
-                          [maps:get(suite, Settings),
-                           maps:get(accept_suites, Settings),
-                           maps:get(fingerprint, Settings)]),
-            {ok, State#state{node_name = NodeName,
-                             key_info = KeyInfo,
-                             settings = Settings}};
+                          [Suite, AcceptSuites, Fingerprint]),
+            {ok, State#state{key_info = KeyInfo}};
         {error, _} = Error ->
             Error
     end.
@@ -162,6 +188,31 @@ table_value(Key) ->
     try ets:lookup(?TABLE, Key) of
         [{Key, Value}] -> {ok, Value};
         [] -> {error, not_ready}
+    catch
+        error:badarg -> {error, not_ready}
+    end.
+
+setting_values(Keys) ->
+    lists:foldl(
+      fun(Key, {ok, Acc}) ->
+              case table_value(Key) of
+                  {ok, Value} -> {ok, Acc#{Key => Value}};
+                  {error, _} = Error -> Error
+              end;
+         (_Key, {error, _} = Error) ->
+              Error
+      end, {ok, #{}}, Keys).
+
+optional_setting_values(Keys) ->
+    try
+        Values = lists:foldl(
+                   fun(Key, Acc) ->
+                           case ets:lookup(?TABLE, Key) of
+                               [{Key, Value}] -> Acc#{Key => Value};
+                               [] -> Acc
+                           end
+                   end, #{}, Keys),
+        {ok, Values}
     catch
         error:badarg -> {error, not_ready}
     end.
