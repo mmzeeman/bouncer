@@ -2,7 +2,6 @@
  [{description, "Erlang distribution over Noise (enoise)"},
   {vsn, "0.1.0"},
   {registered, []},
-  {mod, {bouncer_app, []}},
   {applications, [kernel, stdlib, enoise]},
   {env, []},
   {licenses, ["Apache-2.0"]}
