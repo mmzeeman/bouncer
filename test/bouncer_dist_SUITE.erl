@@ -8,17 +8,22 @@
 -export([distribution_roundtrip/1, large_transfer_and_full_duplex/1,
          unauthorized_and_name_binding/1, supported_suites/1, rekey/1,
          idle_disconnect_reconnect_and_revocation/1, max_pending/1,
-         wrong_distribution_protocol/1, logs_do_not_contain_secret_key/1]).
+         wrong_distribution_protocol/1, logs_do_not_contain_secret_key/1,
+         config_restart/1, isolated_settings/1, live_settings/1,
+         invalid_settings_start/1, no_key_start/1,
+         get_value/1, captured_logs/0, ct_data_owner/1]).
 -export([echo_loop/0, echo_sender/3, send_many/4,
          echo_sender_generated/3,
-         watch_node/2, kill_dist_socket/1,
+         watch_node/2, kill_dist_socket/1, distribution_send_timeout/2,
          adding_handler/1, removing_handler/1, log/2]).
 
 all() ->
     [distribution_roundtrip, large_transfer_and_full_duplex,
      unauthorized_and_name_binding, supported_suites, rekey,
      idle_disconnect_reconnect_and_revocation, max_pending,
-     wrong_distribution_protocol, logs_do_not_contain_secret_key].
+     wrong_distribution_protocol, logs_do_not_contain_secret_key,
+     config_restart, isolated_settings, live_settings,
+     invalid_settings_start, no_key_start].
 
 init_per_suite(Config) ->
     _ = os:cmd("epmd -daemon"),
@@ -34,11 +39,19 @@ init_per_testcase(Case, Config) ->
     Root = temp_dir("bouncer_dist_" ++ atom_to_list(Case)),
     InitiatorOpts = case Case of
                         rekey -> [{"rekey_after", "frames:50"}];
+                        isolated_settings ->
+                            [{"suite", "chachapoly_blake2b"},
+                             {"accept_suites",
+                              "chachapoly_blake2b,aesgcm_sha256,aesgcm_sha512,aesgcm_blake2b"}];
                         _ -> []
                     end,
     ResponderOpts = case Case of
                         max_pending -> [{"max_pending", "2"}];
                         rekey -> [{"rekey_after", "frames:50"}];
+                        isolated_settings ->
+                            [{"suite", "aesgcm_sha256"},
+                             {"accept_suites",
+                              "chachapoly_blake2b,aesgcm_sha256,aesgcm_sha512,aesgcm_blake2b"}];
                         _ -> []
                     end,
     {PeerA, NodeA, NameA, DirA, AuthA, KeyA} =
@@ -262,16 +275,220 @@ logs_do_not_contain_secret_key(Config) ->
                                  [?config(node_b, Config)])),
     lists:foreach(
       fun({Peer, Key}) ->
-              Events = peer:call(Peer, persistent_term, get,
-                                 [{?MODULE, captured_logs}, []]),
+              Events = peer:call(Peer, ?MODULE, captured_logs, []),
               Encoded = term_to_binary(Events),
               Secret = bouncer_keys:secret(Key),
               ?assertEqual(nomatch, binary:match(Encoded, Secret)),
               ?assertEqual(nomatch,
-                           binary:match(Encoded, base64:encode(Secret)))
+                           binary:match(Encoded, base64:encode(Secret))),
+              PersistentTerms = peer:call(Peer, persistent_term, get, []),
+              PersistentKeys = [Key0 || {Key0, _Value} <- PersistentTerms],
+              ?assertEqual([], [Key0 || Key0 <- PersistentKeys,
+                                        bouncer_key(Key0)]),
+              PersistentData = term_to_binary(PersistentTerms),
+              ?assertEqual(nomatch, binary:match(PersistentData, Secret)),
+              ?assertEqual(nomatch,
+                           binary:match(PersistentData, base64:encode(Secret))),
+              ?assertEqual(nomatch,
+                           binary:match(PersistentData,
+                                        bouncer_keys:public(Key))),
+              ?assertEqual(nomatch,
+                           binary:match(PersistentData,
+                                        bouncer_keys:fingerprint(Key)))
       end, [{?config(peer_a, Config), ?config(key_a, Config)},
             {?config(peer_b, Config), ?config(key_b, Config)}]),
     ok.
+
+config_restart(Config) ->
+    PeerA = ?config(peer_a, Config),
+    NodeB = ?config(node_b, Config),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    {ok, OldSettings} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    OldLimit = maps:get(limit_handle, maps:get(hs_opts, OldSettings)),
+    true = peer:call(PeerA, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 1234}]),
+    OldPid = peer:call(PeerA, erlang, whereis, [bouncer_dist_config]),
+    ?assert(is_pid(OldPid)),
+    _ = peer:call(PeerA, erlang, exit, [OldPid, kill]),
+    NewPid = await_config_restart(PeerA, OldPid,
+                                  erlang:monotonic_time(millisecond) + 10000),
+    ?assert(is_pid(NewPid)),
+    ?assertNotEqual(OldPid, NewPid),
+    {ok, NewSettings} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    ?assertEqual(1234, maps:get(send_timeout_ms, NewSettings)),
+    ?assertEqual(OldLimit, maps:get(limit_handle, maps:get(hs_opts, NewSettings))),
+    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ok.
+
+isolated_settings(Config) ->
+    PeerA = ?config(peer_a, Config),
+    PeerB = ?config(peer_b, Config),
+    NodeA = ?config(node_a, Config),
+    NodeB = ?config(node_b, Config),
+    {ok, SuiteA} = peer:call(PeerA, bouncer_dist_config, get, [suite]),
+    {ok, SuiteB} = peer:call(PeerB, bouncer_dist_config, get, [suite]),
+    {ok, DirA} = peer:call(PeerA, bouncer_dist_config, get, [dir]),
+    {ok, DirB} = peer:call(PeerB, bouncer_dist_config, get, [dir]),
+    {ok, SettingsA} =
+        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+    ?assertEqual([],
+                 peer:call(PeerA, ets, lookup,
+                           [bouncer_dist_config, connection_settings])),
+    ?assertEqual(atom_to_binary(NodeA, utf8), maps:get(node_name, SettingsA)),
+    ?assertEqual(SuiteA, maps:get(suite, maps:get(hs_opts, SettingsA))),
+    SendTimeout = maps:get(send_timeout_ms, SettingsA),
+    try
+        true = peer:call(PeerA, ets, insert,
+                         [bouncer_dist_config, {send_timeout_ms, 1234}]),
+        {ok, ChangedSettings} =
+            peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+        ?assertEqual(1234, maps:get(send_timeout_ms, ChangedSettings)),
+        ?assertEqual(1234, maps:get(send_timeout_ms,
+                                    maps:get(hs_opts, ChangedSettings)))
+    after
+        true = peer:call(PeerA, ets, insert,
+                         [bouncer_dist_config,
+                          {send_timeout_ms, SendTimeout}])
+    end,
+    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
+    ?assertEqual({error, not_ready},
+                 peer:call(PeerA, bouncer_dist_config, get, [settings])),
+    ?assertEqual(chachapoly_blake2b, SuiteA),
+    ?assertEqual(aesgcm_sha256, SuiteB),
+    ?assertNotEqual(DirA, DirB),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ?assertEqual(pong, peer:call(PeerB, net_adm, ping, [NodeA], 30000)),
+    ok.
+
+live_settings(Config) ->
+    PeerA = ?config(peer_a, Config),
+    PeerB = ?config(peer_b, Config),
+    NodeA = ?config(node_a, Config),
+    NodeB = ?config(node_b, Config),
+    Port = node_port(NodeB),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    true = peer:call(PeerA, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 12000}]),
+    true = peer:call(PeerB, ets, insert,
+                     [bouncer_dist_config, {send_timeout_ms, 13000}]),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 30000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    ?assertEqual(true, peer:call(PeerA, erlang, disconnect_node, [NodeB])),
+    ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
+    ?assertEqual({ok, 12000},
+                 peer:call(PeerA, ?MODULE, distribution_send_timeout,
+                           [peer, Port])),
+    ?assertEqual({ok, 13000},
+                 peer:call(PeerB, ?MODULE, distribution_send_timeout,
+                           [local, Port])),
+    ?assert(lists:member(NodeA, peer:call(PeerB, erlang, nodes, []))),
+    ok.
+
+invalid_settings_start(Config) ->
+    Root = ?config(case_root, Config),
+    Result = start_bouncer_with_args(
+               Root, "invalid_suite",
+               ["-bouncer", "suite", "foo",
+                "-bouncer", "dir", filename:join(Root, "invalid_suite_dir")]),
+    assert_startup_failure_contains(Result, "suite"),
+    assert_startup_failure_contains(Result, "chachapoly_blake2b").
+
+no_key_start(Config) ->
+    Root = ?config(case_root, Config),
+    Dir = filename:join(Root, "no_key_dir"),
+    ok = filelib:ensure_dir(filename:join(Dir, "marker")),
+    Result = start_bouncer_with_args(
+               Root, "no_key",
+               ["-bouncer", "dir", Dir,
+                "-bouncer", "generate", "false"]),
+    assert_startup_failure_contains(Result, "no_key").
+
+start_bouncer_with_args(_Root, Suffix, ExtraArgs) ->
+    Name = list_to_atom("bouncer_start_" ++ Suffix ++ "_" ++
+                        integer_to_list(erlang:unique_integer([positive]))),
+    Erl = os:find_executable("erl"),
+    Args = ["-noshell", "-noinput", "+S", "2:2", "-proto_dist", "bouncer",
+            "-name", atom_to_list(Name) ++ "@127.0.0.1"] ++
+        ExtraArgs ++ ["-pa" | code:get_path()],
+    Port = open_port({spawn_executable, Erl},
+                     [binary, exit_status, stderr_to_stdout, {args, Args}]),
+    collect_startup_output(Port, <<>>).
+
+assert_startup_failure_contains(Failure, Text) ->
+    {Status, Output} = Failure,
+    ?assert(Status =/= 0),
+    ?assertNotEqual(nomatch, binary:match(Output, list_to_binary(Text))).
+
+collect_startup_output(Port, Acc) ->
+    receive
+        {Port, {data, Data}} ->
+            collect_startup_output(Port, <<Acc/binary, Data/binary>>);
+        {Port, {exit_status, Status}} ->
+            {Status, Acc}
+    after 20000 ->
+        _ = port_close(Port),
+        ct:fail(distribution_startup_did_not_exit)
+    end.
+
+await_config_restart(Peer, OldPid, Deadline) ->
+    case peer:call(Peer, erlang, whereis, [bouncer_dist_config]) of
+        Pid when is_pid(Pid), Pid =/= OldPid ->
+            case peer:call(Peer, bouncer_dist_config, key_info, []) of
+                {ok, _} ->
+                    case peer:call(Peer, erlang, whereis,
+                                   [bouncer_dist_config]) of
+                        Pid -> Pid;
+                        _ -> await_config_restart_retry(Peer, OldPid, Deadline)
+                    end;
+                {error, not_ready} ->
+                    await_config_restart_retry(Peer, OldPid, Deadline)
+            end;
+        _ ->
+            await_config_restart_retry(Peer, OldPid, Deadline)
+    end.
+
+await_config_restart_retry(Peer, OldPid, Deadline) ->
+    case erlang:monotonic_time(millisecond) < Deadline of
+        true ->
+            timer:sleep(25),
+            await_config_restart(Peer, OldPid, Deadline);
+        false ->
+            ct:fail(config_process_did_not_restart)
+    end.
+
+get_value(Key) ->
+    case ets:lookup(bouncer_dist_ct_data, {value, Key}) of
+        [{{value, Key}, Value}] -> Value;
+        [] -> undefined
+    end.
+
+captured_logs() ->
+    [Event || {{log, _Id}, Event} <- ets:tab2list(bouncer_dist_ct_data)].
+
+bouncer_key(bouncer) -> true;
+bouncer_key(Key) when is_atom(Key) ->
+    lists:prefix("bouncer", atom_to_list(Key));
+bouncer_key(<<"bouncer", _/binary>>) ->
+    true;
+bouncer_key(Key) when is_tuple(Key), tuple_size(Key) > 0 ->
+    bouncer_key(element(1, Key));
+bouncer_key(_) ->
+    false.
 
 setup_echo(Peer) ->
     Pid = peer:call(Peer, erlang, spawn, [?MODULE, echo_loop, []]),
@@ -283,21 +500,20 @@ echo_loop() ->
         {echo, Ref, From, Payload} ->
             Size = byte_size(Payload),
             Hash = crypto:hash(sha256, Payload),
-            persistent_term:put({?MODULE, {result, Ref}}, {Size, Hash}),
+            put_value({result, Ref}, {Size, Hash}),
             From ! {Ref, Size, Hash},
             echo_loop();
         {batch, Ref, Seq, Payload} ->
             case Seq of
                 10000 ->
-                    persistent_term:put({?MODULE, {batch, Ref, Seq}},
-                                        byte_size(Payload)),
-                    persistent_term:put({?MODULE, {batch, Ref}}, ok);
+                    put_value({batch, Ref, Seq}, byte_size(Payload)),
+                    put_value({batch, Ref}, ok);
                 _ -> ok
             end,
             echo_loop();
         {large, Ref, Payload} ->
-            persistent_term:put({?MODULE, {large, Ref}},
-                                {byte_size(Payload), crypto:hash(sha256, Payload)}),
+            put_value({large, Ref},
+                      {byte_size(Payload), crypto:hash(sha256, Payload)}),
             echo_loop();
         stop ->
             ok
@@ -307,28 +523,28 @@ echo_sender(Destination, Ref, Payload) ->
     Destination ! {echo, Ref, self(), Payload},
     receive
         {Ref, Size, Hash} ->
-            persistent_term:put({?MODULE, {result, Ref}}, {Size, Hash})
+            put_value({result, Ref}, {Size, Hash})
     after 120000 ->
         exit(echo_timeout)
     end.
 
 echo_sender_generated(Destination, Ref, Size) ->
     Payload = crypto:strong_rand_bytes(Size),
-    persistent_term:put({?MODULE, {expected, Ref}}, crypto:hash(sha256, Payload)),
+    put_value({expected, Ref}, crypto:hash(sha256, Payload)),
     echo_sender(Destination, Ref, Payload).
 
 send_many(Destination, Ref, Count, LargeSize) ->
     lists:foreach(fun(Seq) -> Destination ! {batch, Ref, Seq, <<Seq:32>>} end,
                   lists:seq(1, Count)),
     Large = crypto:strong_rand_bytes(LargeSize),
-    persistent_term:put({?MODULE, {expected, Ref}}, crypto:hash(sha256, Large)),
+    put_value({expected, Ref}, crypto:hash(sha256, Large)),
     Destination ! {large, Ref, Large}.
 
 watch_node(Node, Ref) ->
     true = erlang:monitor_node(Node, true),
     receive
         {nodedown, Node} ->
-            persistent_term:put({?MODULE, {nodedown, Ref}}, ok)
+            put_value({nodedown, Ref}, ok)
     after 30000 ->
         exit(nodedown_timeout)
     end.
@@ -351,6 +567,28 @@ socket_peer_port(Socket) ->
         _:_ -> undefined
     end.
 
+distribution_send_timeout(Side, Port) ->
+    Sockets = [Socket || Socket <- erlang:ports(),
+                         socket_peer_port(Socket) =/= undefined,
+                         socket_port(Side, Socket) =:= Port],
+    case Sockets of
+        [Socket] ->
+            case inet:getopts(Socket, [send_timeout]) of
+                {ok, [{send_timeout, Timeout}]} -> {ok, Timeout};
+                Error -> Error
+            end;
+        _ ->
+            {error, {expected_one_distribution_socket, length(Sockets)}}
+    end.
+
+socket_port(peer, Socket) ->
+    socket_peer_port(Socket);
+socket_port(local, Socket) ->
+    case inet:sockname(Socket) of
+        {ok, {_, Port}} -> Port;
+        {error, _} -> undefined
+    end.
+
 node_port(Node) ->
     [ShortName | _] = string:split(atom_to_list(Node), "@", all),
     {port, Port, _Version} = erl_epmd:port_please(ShortName, {127, 0, 0, 1}),
@@ -361,8 +599,7 @@ await_result(Peer, Key, Timeout) ->
     await_result_loop(Peer, Key, Deadline).
 
 await_result_loop(Peer, Key, Deadline) ->
-    case peer:call(Peer, persistent_term, get,
-                   [{?MODULE, Key}, undefined]) of
+    case peer:call(Peer, ?MODULE, get_value, [Key]) of
         undefined ->
             case erlang:monotonic_time(millisecond) < Deadline of
                 true ->
@@ -439,29 +676,56 @@ authorize(Name, Keys, AuthDir) ->
     Path.
 
 install_log_capture(Peer) ->
-    persistent_term:put({?MODULE, captured_logs}, []),
     ok = peer:call(Peer, logger, add_handler,
                    [bouncer_dist_ct_capture, ?MODULE, #{level => all}]),
     ok.
 
 log_contains(Peer, Text) ->
     timer:sleep(100),
-    Events = peer:call(Peer, persistent_term, get,
-                       [{?MODULE, captured_logs}, []]),
+    Events = peer:call(Peer, ?MODULE, captured_logs, []),
     Formatted = iolist_to_binary(io_lib:format("~p", [Events])),
     binary:match(Formatted, list_to_binary(Text)) =/= nomatch.
 
 adding_handler(Config) ->
+    ensure_ct_data_table(),
+    ets:delete_all_objects(bouncer_dist_ct_data),
     {ok, Config}.
 
 removing_handler(_Config) ->
     ok.
 
 log(Event, Config) ->
-    Key = maps:get(storage_key, Config, {?MODULE, captured_logs}),
-    Existing = persistent_term:get(Key, []),
-    persistent_term:put(Key, lists:sublist([Event | Existing], 1000)),
+    _ = Config,
+    Id = erlang:unique_integer([positive]),
+    true = ets:insert(bouncer_dist_ct_data, {{log, Id}, Event}),
     ok.
+
+put_value(Key, Value) ->
+    true = ets:insert(bouncer_dist_ct_data, {{value, Key}, Value}),
+    ok.
+
+ensure_ct_data_table() ->
+    case ets:whereis(bouncer_dist_ct_data) of
+        undefined ->
+            Parent = self(),
+            Pid = spawn(?MODULE, ct_data_owner, [Parent]),
+            receive
+                {ct_data_ready, Pid} ->
+                    ok
+            after 5000 ->
+                exit({ct_data_owner_start_timeout, Pid})
+            end;
+        _Tid ->
+            ok
+    end.
+
+ct_data_owner(Parent) ->
+    _ = ets:new(bouncer_dist_ct_data,
+                [named_table, set, public, {read_concurrency, true}]),
+    Parent ! {ct_data_ready, self()},
+    receive
+        stop -> ok
+    end.
 
 stop_peer(Peer) when is_pid(Peer) ->
     peer:stop(Peer),
