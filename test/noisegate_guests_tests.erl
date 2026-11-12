@@ -1,11 +1,11 @@
--module(bouncer_guests_tests).
+-module(noisegate_guests_tests).
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kernel/include/file.hrl").
 
 %%% Helpers
 
 with_dir(Fun) ->
-    Base = "/tmp/bouncer_guests_test_" ++ integer_to_list(erlang:unique_integer([positive]))
+    Base = "/tmp/noisegate_guests_test_" ++ integer_to_list(erlang:unique_integer([positive]))
         ++ "_" ++ os:getpid(),
     ok = file:make_dir(Base),
     try
@@ -17,7 +17,7 @@ with_dir(Fun) ->
 run(Args) -> run(Args, #{}).
 
 run(Args, Env) ->
-    {Code, Out, Err} = bouncer_guests:run(Args, Env),
+    {Code, Out, Err} = noisegate_guests:run(Args, Env),
     {Code, unicode:characters_to_binary(Out), unicode:characters_to_binary(Err)}.
 
 mode(Path) ->
@@ -31,7 +31,7 @@ new_pub() ->
     Pub.
 
 b64(K) -> binary_to_list(base64:encode(K)).
-fp(K) -> binary_to_list(bouncer_keys:fingerprint(K)).
+fp(K) -> binary_to_list(noisegate_keys:fingerprint(K)).
 
 %% Directories of a node: {KeyDir, AuthDir, GlobalArgs}.
 node_dirs(B, Name) ->
@@ -58,10 +58,10 @@ init_test_() ->
           ?assertEqual(8#755, mode(A)),
           KeyFile = filename:join(K, "id_x25519"),
           ?assertEqual(8#600, mode(KeyFile)),
-          {ok, Info} = bouncer_keys:load_or_generate(<<"a@h">>, (keys_opts(K, A))#{generate => false}),
-          Pub = bouncer_keys:public(Info),
+          {ok, Info} = noisegate_keys:load_or_generate(<<"a@h">>, (keys_opts(K, A))#{generate => false}),
+          Pub = noisegate_keys:public(Info),
           [Line, FpLine] = binary:split(string:trim(Out), <<"\n">>),
-          ?assertEqual(string:trim(bouncer_keys:authorized_line(<<"a@h">>, Pub)), Line),
+          ?assertEqual(string:trim(noisegate_keys:authorized_line(<<"a@h">>, Pub)), Line),
           ?assert(contains(FpLine, "SHA256:")),
           ?assert(contains(FpLine, fp(Pub))),
           {ok, Before} = file:read_file(KeyFile),
@@ -116,9 +116,9 @@ add_test_() ->
                              #{stdin => <<"\n# fingerprint x\np3@h ", (base64:encode(P3))/binary, "\n\n">>}),
           ?assert(contains(Out4, fp(P3))),
           O = keys_opts(K, A),
-          [?assertEqual(allowed, bouncer_keys:check_peer(N, P, O))
+          [?assertEqual(allowed, noisegate_keys:check_peer(N, P, O))
            || {N, P} <- [{<<"p1@h">>, P1}, {<<"p2@h">>, P2}, {<<"p3@h">>, P3}]],
-          {ok, Entries, []} = bouncer_keys:list_peers(O),
+          {ok, Entries, []} = noisegate_keys:list_peers(O),
           ?assertMatch([#{comment := <<"first one">>}], [E || #{name := <<"p1@h">>} = E <- Entries]),
           ?assertMatch([#{comment := <<"some comment">>}], [E || #{name := <<"p2@h">>} = E <- Entries])
       end) end},
@@ -186,7 +186,7 @@ remove_test_() ->
           {0, _, _} = add(["a@h", b64(Key)], G),
           {0, Out, <<>>} = run(["remove", "a@h" | G]),
           ?assert(contains(Out, fp(Key))),
-          ?assertEqual(unknown_name, bouncer_keys:check_peer(<<"a@h">>, Key, keys_opts(K, A)))
+          ?assertEqual(unknown_name, noisegate_keys:check_peer(<<"a@h">>, Key, keys_opts(K, A)))
       end) end},
      {"several entries need --fingerprint or --all",
       fun() -> with_dir(fun(B) ->
@@ -200,12 +200,12 @@ remove_test_() ->
           ?assertEqual(2, dir_count(A)),
           {0, _, _} = run(["remove", "a@h", "--fingerprint", fp(K1) | G]),
           O = keys_opts(K, A),
-          ?assertEqual(denied, bouncer_keys:check_peer(<<"a@h">>, K1, O)),
-          ?assertEqual(allowed, bouncer_keys:check_peer(<<"a@h">>, K2, O)),
+          ?assertEqual(denied, noisegate_keys:check_peer(<<"a@h">>, K1, O)),
+          ?assertEqual(allowed, noisegate_keys:check_peer(<<"a@h">>, K2, O)),
           {0, _, _} = add(["a@h", b64(K1)], G),
           {0, _, _} = run(["remove", "a@h", "--all" | G]),
-          ?assertEqual(unknown_name, bouncer_keys:check_peer(<<"a@h">>, K1, O)),
-          ?assertEqual(unknown_name, bouncer_keys:check_peer(<<"a@h">>, K2, O))
+          ?assertEqual(unknown_name, noisegate_keys:check_peer(<<"a@h">>, K1, O)),
+          ?assertEqual(unknown_name, noisegate_keys:check_peer(<<"a@h">>, K2, O))
       end) end},
      {"unknown name / fingerprint -> 1; conflicting options -> 2",
       fun() -> with_dir(fun(B) ->
@@ -366,22 +366,22 @@ two_node_workflow_test() ->
         {0, OutB, _} = run(["init", "--node", "b@h" | GB]),
         {0, _, _} = run(["add", "-" | GB], #{stdin => OutA}),
         {0, _, _} = run(["add", "-" | GA], #{stdin => OutB}),
-        {ok, IA} = bouncer_keys:load_or_generate(<<"a@h">>, (keys_opts(KA, AA))#{generate => false}),
-        {ok, IB} = bouncer_keys:load_or_generate(<<"b@h">>, (keys_opts(KB, AB))#{generate => false}),
-        PubA = bouncer_keys:public(IA),
-        PubB = bouncer_keys:public(IB),
-        ?assertEqual(allowed, bouncer_keys:check_peer(<<"a@h">>, PubA, keys_opts(KB, AB))),
-        ?assertEqual(allowed, bouncer_keys:check_peer(<<"b@h">>, PubB, keys_opts(KA, AA))),
-        ?assertEqual(denied, bouncer_keys:check_peer(<<"a@h">>, PubB, keys_opts(KB, AB))),
+        {ok, IA} = noisegate_keys:load_or_generate(<<"a@h">>, (keys_opts(KA, AA))#{generate => false}),
+        {ok, IB} = noisegate_keys:load_or_generate(<<"b@h">>, (keys_opts(KB, AB))#{generate => false}),
+        PubA = noisegate_keys:public(IA),
+        PubB = noisegate_keys:public(IB),
+        ?assertEqual(allowed, noisegate_keys:check_peer(<<"a@h">>, PubA, keys_opts(KB, AB))),
+        ?assertEqual(allowed, noisegate_keys:check_peer(<<"b@h">>, PubB, keys_opts(KA, AA))),
+        ?assertEqual(denied, noisegate_keys:check_peer(<<"a@h">>, PubB, keys_opts(KB, AB))),
         {0, _, _} = run(["check", "a@h", fp(PubA) | GB]),
         {0, _, _} = run(["remove", "a@h" | GB]),
-        ?assertEqual(unknown_name, bouncer_keys:check_peer(<<"a@h">>, PubA, keys_opts(KB, AB)))
+        ?assertEqual(unknown_name, noisegate_keys:check_peer(<<"a@h">>, PubA, keys_opts(KB, AB)))
     end).
 
 %% Runs every command in a fresh VM whose code path has no enoise.
 no_enoise_test_() ->
     {timeout, 60, fun() -> with_dir(fun(B) ->
-        Ebin = filename:dirname(code:which(bouncer_guests)),
+        Ebin = filename:dirname(code:which(noisegate_guests)),
         {ok, Peer, _Node} = peer:start_link(#{args => ["-pa", Ebin], connection => standard_io}),
         try
             ?assertEqual({error, nofile}, peer:call(Peer, code, ensure_loaded, [enoise_keypair])),
@@ -390,7 +390,7 @@ no_enoise_test_() ->
             Cmds = [["init", "--node", "a@h" | G], ["show", "--self", "--node", "a@h" | G],
                     ["add", "b@h", Key | G], ["list" | G], ["show", "b@h" | G],
                     ["check", "b@h", fp(base64:decode(Key)) | G], ["remove", "b@h" | G]],
-            [?assertMatch({0, _, _}, peer:call(Peer, bouncer_guests, run, [C, #{}])) || C <- Cmds],
+            [?assertMatch({0, _, _}, peer:call(Peer, noisegate_guests, run, [C, #{}])) || C <- Cmds],
             ?assertEqual(false, peer:call(Peer, code, is_loaded, [enoise])),
             ?assertEqual(false, peer:call(Peer, code, is_loaded, [enoise_keypair]))
         after

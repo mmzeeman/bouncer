@@ -1,5 +1,5 @@
 %% Loopback integration tests for the raw-socket Noise XX handshake.
--module(bouncer_hs_SUITE).
+-module(noisegate_hs_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -25,7 +25,7 @@ all() ->
      logs_do_not_contain_secret_key, max_pending].
 
 init_per_suite(Config) ->
-    Root = filename:join("/tmp", "bouncer_hs_" ++
+    Root = filename:join("/tmp", "noisegate_hs_" ++
                          integer_to_list(erlang:unique_integer([positive]))),
     ok = file:make_dir(Root),
     IName = <<"init@host">>,
@@ -65,13 +65,13 @@ success(Suite, Config) ->
     ROpts = responder_opts(RName, RAuth, Suite),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
-    {ok, IResult} = bouncer_hs:initiate(Socket, RName, IKeys, IOpts),
+    {ok, IResult} = noisegate_hs:initiate(Socket, RName, IKeys, IOpts),
     RResult = responder_result(Pid),
     {ok, RResultMap} = RResult,
     ?assertEqual(RName, maps:get(remote_name, IResult)),
-    ?assertEqual(bouncer_keys:public(RKeys), maps:get(remote_key, IResult)),
+    ?assertEqual(noisegate_keys:public(RKeys), maps:get(remote_key, IResult)),
     ?assertEqual(IName, maps:get(remote_name, RResultMap)),
-    ?assertEqual(bouncer_keys:public(IKeys), maps:get(remote_key, RResultMap)),
+    ?assertEqual(noisegate_keys:public(IKeys), maps:get(remote_key, RResultMap)),
     ?assertEqual(Suite, maps:get(suite, IResult)),
     ?assertEqual(Suite, maps:get(suite, RResultMap)),
     Payload = crypto:strong_rand_bytes(1024 * 1024),
@@ -103,7 +103,7 @@ initiator_rejects_untrusted_responder(Config) ->
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
     ?assertEqual({error, {unauthorized_peer, unknown_name}},
-                 bouncer_hs:initiate(Socket, RName, IKeys, IOpts)),
+                 noisegate_hs:initiate(Socket, RName, IKeys, IOpts)),
     ?assertEqual({error, closed}, responder_result(Pid)),
     gen_tcp:close(Listen),
     ok.
@@ -114,12 +114,12 @@ responder_rejects_unknown_initiator(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, noisegate_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
-    ?assertMatch({ok, _}, bouncer_hs:initiate(Socket, RName, IKeys, IOpts)),
+    ?assertMatch({ok, _}, noisegate_hs:initiate(Socket, RName, IKeys, IOpts)),
     ?assertEqual({error, {unauthorized_peer, unknown_name}}, responder_result(Pid)),
     ?assertEqual({error, closed}, gen_tcp:recv(Socket, 1, 1000)),
     gen_tcp:close(Listen),
@@ -132,15 +132,15 @@ responder_rejects_denied_initiator(Config) ->
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
     OtherKeyPair = enoise_keypair:new(dh25519),
-    {ok, _} = bouncer_keys:add_peer(IName, enoise_keypair:pubkey(OtherKeyPair),
+    {ok, _} = noisegate_keys:add_peer(IName, enoise_keypair:pubkey(OtherKeyPair),
                                     #{authorized_dirs => [?config(r_auth, Config)],
                                       node_name => IName}),
-    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, noisegate_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
-    ?assertMatch({ok, _}, bouncer_hs:initiate(Socket, RName, IKeys, IOpts)),
+    ?assertMatch({ok, _}, noisegate_hs:initiate(Socket, RName, IKeys, IOpts)),
     ?assertEqual({error, {unauthorized_peer, denied}}, responder_result(Pid)),
     gen_tcp:close(Listen),
     ok.
@@ -151,15 +151,15 @@ known_key_claiming_other_name(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
-    ok = add_peer(IName, bouncer_keys:public(IKeys), ?config(r_auth, Config)),
+    ok = add_peer(RName, noisegate_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(IName, noisegate_keys:public(IKeys), ?config(r_auth, Config)),
     SpoofedName = <<"spoof@host">>,
     IOpts = (initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512))
                 #{own_name => SpoofedName},
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
-    ?assertMatch({ok, _}, bouncer_hs:initiate(Socket, RName, IKeys, IOpts)),
+    ?assertMatch({ok, _}, noisegate_hs:initiate(Socket, RName, IKeys, IOpts)),
     ?assertEqual({error, {unauthorized_peer, unknown_name}}, responder_result(Pid)),
     gen_tcp:close(Listen),
     ok.
@@ -175,7 +175,7 @@ message2_name_mismatch(Config) ->
     {Pid, Listen, Port} = start_malicious_responder(Target, OtherName, RKeys),
     {ok, Socket} = connect(Port),
     ?assertEqual({error, target_name_mismatch},
-                 bouncer_hs:initiate(Socket, Target, IKeys, IOpts)),
+                 noisegate_hs:initiate(Socket, Target, IKeys, IOpts)),
     ?assertEqual({error, closed}, malicious_result(Pid)),
     gen_tcp:close(Listen),
     ok.
@@ -190,7 +190,7 @@ suite_mismatch(Config) ->
     {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
     {ok, Socket} = connect(Port),
     ?assertEqual({error, unsupported_suite},
-                 bouncer_hs:initiate(Socket, RName, ?config(i_keys, Config), IOpts)),
+                 noisegate_hs:initiate(Socket, RName, ?config(i_keys, Config), IOpts)),
     ?assertEqual({error, unsupported_suite}, responder_result(Pid)),
     gen_tcp:close(Listen),
     ok.
@@ -253,7 +253,7 @@ tampered_flights(Config) ->
               {Pid, Listen, BackendPort} = start_responder(RName, RKeys, ROpts),
               {ProxyPid, ProxyListen, ProxyPort} = start_proxy(BackendPort, Flight),
               {ok, Socket} = connect(ProxyPort),
-              InitiatorResult = bouncer_hs:initiate(Socket, RName, IKeys, IOpts),
+              InitiatorResult = noisegate_hs:initiate(Socket, RName, IKeys, IOpts),
               case Flight of
                   msg3 -> ?assertMatch({ok, _}, InitiatorResult);
                   _ -> ?assertMatch({error, _}, InitiatorResult)
@@ -289,7 +289,7 @@ flight1_sent_before_reply(Config) ->
     ClientPid = spawn(fun() ->
                               Result = case connect(Port) of
                                            {ok, ClientSocket} ->
-                                               bouncer_hs:initiate(ClientSocket, RName,
+                                               noisegate_hs:initiate(ClientSocket, RName,
                                                                    IKeys, IOpts);
                                            {error, Reason} ->
                                                {error, Reason}
@@ -300,7 +300,7 @@ flight1_sent_before_reply(Config) ->
                after 1000 -> ct:fail(no_flight1)
               end,
     ?assertEqual(40, byte_size(Flight1)),
-    ?assertEqual(bouncer_protocol:hello_header(2), binary:part(Flight1, 0, 8)),
+    ?assertEqual(noisegate_protocol:hello_header(2), binary:part(Flight1, 0, 8)),
     ?assertEqual({error, timeout},
                  receive {flight1_idle, ServerPid, Result} -> Result
                  after 1000 -> ct:fail(flight1_not_idle)
@@ -317,18 +317,18 @@ logs_do_not_contain_secret_key(Config) ->
     IName = ?config(i_name, Config),
     RKeys = ?config(r_keys, Config),
     IKeys = ?config(i_keys, Config),
-    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(RName, noisegate_keys:public(RKeys), ?config(i_auth, Config)),
     IOpts = initiator_opts(IName, ?config(i_auth, Config), aesgcm_sha512),
     ROpts = responder_opts(RName, ?config(r_auth, Config), aesgcm_sha512),
     LogFile = filename:join(?config(root, Config), "captured.log"),
-    Handler = bouncer_hs_secret_check,
+    Handler = noisegate_hs_secret_check,
     ok = logger:add_handler(Handler, logger_std_h,
                             #{level => warning,
                               config => #{type => file, file => LogFile}}),
     try
         {Pid, Listen, Port} = start_responder(RName, RKeys, ROpts),
         {ok, Socket} = connect(Port),
-        ?assertMatch({ok, _}, bouncer_hs:initiate(Socket, RName, IKeys, IOpts)),
+        ?assertMatch({ok, _}, noisegate_hs:initiate(Socket, RName, IKeys, IOpts)),
         ?assertEqual({error, {unauthorized_peer, unknown_name}}, responder_result(Pid)),
         gen_tcp:close(Socket),
         gen_tcp:close(Listen)
@@ -336,7 +336,7 @@ logs_do_not_contain_secret_key(Config) ->
         ok = logger:remove_handler(Handler)
     end,
     {ok, Logs} = file:read_file(LogFile),
-    Secrets = [bouncer_keys:secret(IKeys), bouncer_keys:secret(RKeys)],
+    Secrets = [noisegate_keys:secret(IKeys), noisegate_keys:secret(RKeys)],
     [begin
          ?assertEqual(nomatch, binary:match(Logs, base64:encode(Secret))),
          ?assertEqual(nomatch, binary:match(Logs, Secret))
@@ -346,7 +346,7 @@ logs_do_not_contain_secret_key(Config) ->
 identity(Root, Label, Name) ->
     Dir = filename:join(Root, Label),
     Auth = filename:join(Dir, "authorized.d"),
-    {ok, Keys} = bouncer_keys:load_or_generate(Name, #{dir => Dir}),
+    {ok, Keys} = noisegate_keys:load_or_generate(Name, #{dir => Dir}),
     {Keys, Auth}.
 
 authorize_both(Config) ->
@@ -354,11 +354,11 @@ authorize_both(Config) ->
     RName = ?config(r_name, Config),
     IKeys = ?config(i_keys, Config),
     RKeys = ?config(r_keys, Config),
-    ok = add_peer(RName, bouncer_keys:public(RKeys), ?config(i_auth, Config)),
-    ok = add_peer(IName, bouncer_keys:public(IKeys), ?config(r_auth, Config)).
+    ok = add_peer(RName, noisegate_keys:public(RKeys), ?config(i_auth, Config)),
+    ok = add_peer(IName, noisegate_keys:public(IKeys), ?config(r_auth, Config)).
 
 add_peer(Name, Public, AuthDir) ->
-    {ok, _Path} = bouncer_keys:add_peer(Name, Public,
+    {ok, _Path} = noisegate_keys:add_peer(Name, Public,
                                         #{authorized_dirs => [AuthDir],
                                           node_name => Name}),
     ok.
@@ -369,7 +369,7 @@ initiator_opts(Name, AuthDir, Suite) ->
 
 responder_opts(Name, AuthDir, Suite) ->
     #{node_name => Name, authorized_dirs => [AuthDir], accept_suites => [Suite],
-      limit_handle => bouncer_limit:new(64)}.
+      limit_handle => noisegate_limit:new(64)}.
 
 start_responder(Name, Keys, Opts) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {packet, 0}, {active, false},
@@ -378,7 +378,7 @@ start_responder(Name, Keys, Opts) ->
     Parent = self(),
     Pid = spawn(fun() ->
                         {ok, Socket} = gen_tcp:accept(Listen),
-                        Result = bouncer_hs:respond(Socket, Name, Keys, Opts),
+                        Result = noisegate_hs:respond(Socket, Name, Keys, Opts),
                         Parent ! {responder_result, self(), Result}
                 end),
     {Pid, Listen, Port}.
@@ -403,22 +403,22 @@ start_malicious_responder(Target, MessageName, Keys) ->
                         {ok, Socket} = gen_tcp:accept(Listen),
                         {ok, HelloHeader} = gen_tcp:recv(Socket, 8, 1000),
                         {ok, _Suite, 32} =
-                            bouncer_protocol:parse_hello_header(HelloHeader, [2]),
+                            noisegate_protocol:parse_hello_header(HelloHeader, [2]),
                         {ok, Msg1} = gen_tcp:recv(Socket, 32, 1000),
-                        Prologue = bouncer_protocol:prologue(HelloHeader, Target),
-                        KeyPair = enoise_keypair:new(dh25519, bouncer_keys:secret(Keys),
-                                                     bouncer_keys:public(Keys)),
+                        Prologue = noisegate_protocol:prologue(HelloHeader, Target),
+                        KeyPair = enoise_keypair:new(dh25519, noisegate_keys:secret(Keys),
+                                                     noisegate_keys:public(Keys)),
                         {ok, State0} =
                             enoise:handshake([{noise,
-                                              bouncer_protocol:noise_name(aesgcm_sha512)},
+                                              noisegate_protocol:noise_name(aesgcm_sha512)},
                                              {prologue, Prologue}, {s, KeyPair}],
                                             responder),
                         {ok, rcvd, <<>>, State1} =
                             enoise:step_handshake(State0, {rcvd, Msg1}),
                         {ok, send, Msg2, _State2} =
                             enoise:step_handshake(
-                              State1, {send, bouncer_protocol:encode_name(MessageName)}),
-                        ok = gen_tcp:send(Socket, bouncer_protocol:reply_ok(Msg2)),
+                              State1, {send, noisegate_protocol:encode_name(MessageName)}),
+                        ok = gen_tcp:send(Socket, noisegate_protocol:reply_ok(Msg2)),
                         Result = gen_tcp:recv(Socket, 2, 1000),
                         Parent ! {malicious_result, self(), Result}
                 end),
@@ -512,20 +512,20 @@ proxy_result(Pid) ->
     end.
 
 transport_packets(SendCS, RecvCS, Payload) ->
-    Sender = bouncer_protocol:new_sender(SendCS, #{}),
-    Receiver = bouncer_protocol:new_receiver(RecvCS, #{}),
-    Frames = packet_frames(Sender, bouncer_protocol:tx_packet(Payload), []),
+    Sender = noisegate_protocol:new_sender(SendCS, #{}),
+    Receiver = noisegate_protocol:new_receiver(RecvCS, #{}),
+    Frames = packet_frames(Sender, noisegate_protocol:tx_packet(Payload), []),
     {Events, _Receiver} =
         lists:foldl(fun(Frame, {Acc, R}) ->
                             {ok, FrameEvents, R1} =
-                                bouncer_protocol:rx_feed(R, iolist_to_binary(Frame)),
+                                noisegate_protocol:rx_feed(R, iolist_to_binary(Frame)),
                             {Acc ++ FrameEvents, R1}
                     end,
                     {[], Receiver}, Frames),
     [iolist_to_binary(Packet) || {packet, Packet} <- Events].
 
 packet_frames(Sender, Pending, Acc) ->
-    case bouncer_protocol:tx_next(Sender, Pending) of
+    case noisegate_protocol:tx_next(Sender, Pending) of
         {Frame, _Sender1, done} ->
             lists:reverse([Frame | Acc]);
         {Frame, Sender1, more, Pending1} ->
@@ -533,7 +533,7 @@ packet_frames(Sender, Pending, Acc) ->
     end.
 
 require_suite(Suite) ->
-    Probe = try enoise:handshake([{noise, bouncer_protocol:noise_name(Suite)}], initiator)
+    Probe = try enoise:handshake([{noise, noisegate_protocol:noise_name(Suite)}], initiator)
             catch
                 _:_ -> unsupported
             end,
