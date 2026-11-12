@@ -50,7 +50,7 @@
     policy_error/0
 ]).
 
--define(HELLO_MAGIC, <<"BNCR">>).
+-define(HELLO_MAGIC, <<"NSGT">>).
 -define(VERSION, 1).
 -define(HELLO_HEADER_SIZE, 8).
 -define(MSG1_LENGTH, 32).
@@ -92,7 +92,7 @@ hello(SuiteId, Msg1) when is_binary(Msg1), byte_size(Msg1) =:= ?MSG1_LENGTH ->
 
 -spec parse_hello_header(binary(), [byte()]) ->
           {ok, suite(), 32} | {reject, 1} | {reject, 2} | {error, bad_hello_header}.
-parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
+parse_hello_header(<<"NSGT", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
   when SuiteId >= 1 andalso SuiteId =< 4
        andalso is_list(AcceptedIds) ->
     case lists:member(SuiteId, AcceptedIds) of
@@ -103,10 +103,10 @@ parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
         true ->
             {error, bad_hello_header}
     end;
-parse_hello_header(<<"BNCR", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
+parse_hello_header(<<"NSGT", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
   when Version =/= ?VERSION ->
     {reject, 1};
-parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
+parse_hello_header(<<"NSGT", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
   when is_list(AcceptedIds) ->
     %% Unsupported suite id.
     {reject, 2};
@@ -119,16 +119,16 @@ parse_hello_header(_, _) ->
 -spec parse_reply_header(binary()) ->
           {ok, 1..16#ffff} |
           {error, unsupported_version | unsupported_suite | bad_reply_header}.
-parse_reply_header(<<"BNCR", ?VERSION:8, 0:8, Msg2Len:16>>) ->
+parse_reply_header(<<"NSGT", ?VERSION:8, 0:8, Msg2Len:16>>) ->
     {Min, Max} = maps:get(msg2_length, limits()),
     case Msg2Len >= Min andalso Msg2Len =< Max of
         true -> {ok, Msg2Len};
         false -> {error, bad_reply_header}
     end;
-parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+parse_reply_header(<<"NSGT", ?VERSION:8, Status:8, 0:16>>)
   when Status =:= 1 ->
     {error, unsupported_version};
-parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+parse_reply_header(<<"NSGT", ?VERSION:8, Status:8, 0:16>>)
   when Status =:= 2 ->
     {error, unsupported_suite};
 parse_reply_header(_) ->

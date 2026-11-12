@@ -40,29 +40,29 @@ unsupported_suite_test_() ->
 unknown_suite_test_() ->
     [?_assertEqual({reject, 2},
                    noisegate_protocol:parse_hello_header(
-                     <<"BNCR", 1, Id, 32:16>>, [1, 2, 3, 4]))
+                     <<"NSGT", 1, Id, 32:16>>, [1, 2, 3, 4]))
      || Id <- [0, 5, 255]].
 
 
 parse_header_test() ->
     %% version
-    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"BNCR", 0, 2, 32:16>>, [2])),
-    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"BNCR", 2, 2, 32:16>>, [2])),
-    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"BNCR", 255, 9, 0:16>>, [2])),
+    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"NSGT", 0, 2, 32:16>>, [2])),
+    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"NSGT", 2, 2, 32:16>>, [2])),
+    ?assertEqual({reject, 1}, noisegate_protocol:parse_hello_header(<<"NSGT", 255, 9, 0:16>>, [2])),
     %% suite
-    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 0, 32:16>>, [2])),
-    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 5, 32:16>>, [2])),
-    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 1, 32:16>>, [2])),   % known, not accepted
+    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 0, 32:16>>, [2])),
+    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 5, 32:16>>, [2])),
+    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 1, 32:16>>, [2])),   % known, not accepted
     %% length
-    ?assertEqual({ok, aesgcm_sha512, 32}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 2, 32:16>>, [2])),
-    [?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 2, L:16>>, [2]))
+    ?assertEqual({ok, aesgcm_sha512, 32}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 2, 32:16>>, [2])),
+    [?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 2, L:16>>, [2]))
      || L <- [0, 31, 33, 65535]],
     %% framing
     ?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<"XNCR", 1, 2, 32:16>>, [2])),
-    ?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 2, 32>>, [2])),
+    ?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 2, 32>>, [2])),
     ?assertEqual({error, bad_hello_header}, noisegate_protocol:parse_hello_header(<<>>, [2])),
     %% accept list accepting an id outside 1..4 must not make that id valid
-    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"BNCR", 1, 9, 32:16>>, [9, 2])).
+    ?assertEqual({reject, 2}, noisegate_protocol:parse_hello_header(<<"NSGT", 1, 9, 32:16>>, [9, 2])).
 
 prologue_vector_test() ->
     Header = <<16#42, 16#4e, 16#43, 16#52, 1, 2, 0, 32>>,
@@ -87,9 +87,9 @@ hello_header_matches_prologue_input_test() ->
 
 wire_frames_test() ->
     Msg2 = <<1, 2, 3>>,
-    ?assertEqual(<<"BNCR", 1, 0, 0, 3, Msg2/binary>>, noisegate_protocol:reply_ok(Msg2)),
-    ?assertEqual(<<"BNCR", 1, 1, 0, 0>>, noisegate_protocol:reply_reject(1)),
-    ?assertEqual(<<"BNCR", 1, 2, 0, 0>>, noisegate_protocol:reply_reject(2)),
+    ?assertEqual(<<"NSGT", 1, 0, 0, 3, Msg2/binary>>, noisegate_protocol:reply_ok(Msg2)),
+    ?assertEqual(<<"NSGT", 1, 1, 0, 0>>, noisegate_protocol:reply_reject(1)),
+    ?assertEqual(<<"NSGT", 1, 2, 0, 0>>, noisegate_protocol:reply_reject(2)),
     Msg3 = <<4, 5>>,
     ?assertEqual(<<0, 2, Msg3/binary>>, noisegate_protocol:msg3_frame(Msg3)),
     ?assertEqual(<<0, 8, "bob@host">>, noisegate_protocol:encode_name(<<"bob@host">>)).
@@ -98,22 +98,22 @@ reply_header_test() ->
     Limits = noisegate_protocol:limits(),
     {Msg2Min, Msg2Max} = maps:get(msg2_length, Limits),
     ?assertEqual({ok, Msg2Min},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 0, Msg2Min:16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 0, Msg2Min:16>>)),
     ?assertEqual({ok, Msg2Max},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 0, Msg2Max:16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 0, Msg2Max:16>>)),
     ?assertEqual({error, bad_reply_header},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 0, (Msg2Min - 1):16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 0, (Msg2Min - 1):16>>)),
     ?assertEqual({error, bad_reply_header},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 0, (Msg2Max + 1):16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 0, (Msg2Max + 1):16>>)),
     ?assertEqual({error, unsupported_version},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 1, 0:16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 1, 0:16>>)),
     ?assertEqual({error, unsupported_suite},
-                 noisegate_protocol:parse_reply_header(<<"BNCR", 1, 2, 0:16>>)),
+                 noisegate_protocol:parse_reply_header(<<"NSGT", 1, 2, 0:16>>)),
     [?assertEqual({error, bad_reply_header},
                   noisegate_protocol:parse_reply_header(Header))
-     || Header <- [<<"BNCR", 1, 1, 1:16>>, <<"BNCR", 1, 2, 1:16>>,
-                   <<"BNCR", 1, 3, 0:16>>, <<"XNCR", 1, 0, Msg2Min:16>>,
-                   <<"BNCR", 2, 0, Msg2Min:16>>, <<>>]].
+     || Header <- [<<"NSGT", 1, 1, 1:16>>, <<"NSGT", 1, 2, 1:16>>,
+                   <<"NSGT", 1, 3, 0:16>>, <<"XNCR", 1, 0, Msg2Min:16>>,
+                   <<"NSGT", 2, 0, Msg2Min:16>>, <<>>]].
 
 msg3_prefix_test() ->
     Limits = noisegate_protocol:limits(),

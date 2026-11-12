@@ -401,7 +401,7 @@ big-endian.
 The initiator chooses one suite and sends flight 1:
 
 ```erlang
-<<"BNCR", 1:8, SuiteId:8, Msg1Len:16, Msg1:Msg1Len/binary>>
+<<"NSGT", 1:8, SuiteId:8, Msg1Len:16, Msg1:Msg1Len/binary>>
 ```
 
 For XX with an empty first-message payload, `Msg1` is the 32-byte ephemeral
@@ -420,7 +420,7 @@ target into the prologue makes a change to either fail Noise authentication.
 The responder replies with flight 2:
 
 ```erlang
-<<"BNCR", 1:8, Status:8, Msg2Len:16, Msg2:Msg2Len/binary>>
+<<"NSGT", 1:8, Status:8, Msg2Len:16, Msg2:Msg2Len/binary>>
 ```
 
 Status `0` means success and carries the responder's raw Noise message 2.
