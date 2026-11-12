@@ -11,7 +11,7 @@
 %%     It assigns initiator tx=CS1, rx=CS2 and responder rx=CS1, tx=CS2.
 %%     The loopback transport test verifies this.
 
--module(bouncer_hs).
+-module(noisegate_hs).
 
 % 
 % Noise XX handshake over a passive raw gen_tcp socket.
@@ -31,7 +31,7 @@
                     suite := suite()}.
 -type opts() :: map().
 
--spec initiate(gen_tcp:socket(), binary(), bouncer_keys:key_info(), opts()) ->
+-spec initiate(gen_tcp:socket(), binary(), noisegate_keys:key_info(), opts()) ->
           {ok, result()} | {error, term()}.
 initiate(Socket, TargetName, Keys, Opts) when is_map(Opts) ->
     case setup_socket(Socket) of
@@ -49,10 +49,10 @@ initiate(Socket, _TargetName, _Keys, _Opts) ->
     gen_tcp:close(Socket),
     {error, bad_options}.
 
--spec respond(gen_tcp:socket(), binary(), bouncer_keys:key_info(), opts()) ->
+-spec respond(gen_tcp:socket(), binary(), noisegate_keys:key_info(), opts()) ->
           {ok, result()} | {error, term()}.
 respond(Socket, OwnName, Keys, Opts) ->
-    case bouncer_limit:acquire(Opts) of
+    case noisegate_limit:acquire(Opts) of
         ok ->
             try
                 case setup_socket(Socket) of
@@ -67,7 +67,7 @@ respond(Socket, OwnName, Keys, Opts) ->
                         finish(Socket, Error)
                 end
             after
-                bouncer_limit:release(Opts)
+                noisegate_limit:release(Opts)
             end;
         {error, busy} ->
             gen_tcp:close(Socket),
@@ -84,14 +84,14 @@ initiate_handshake(Socket, TargetName, Keys, Opts, Deadline) ->
                 false ->
                     {error, bad_suite};
                 true ->
-                    SuiteId = bouncer_protocol:suite_id(Suite),
-                    Header = bouncer_protocol:hello_header(SuiteId),
-                    Prologue = bouncer_protocol:prologue(Header, TargetName),
+                    SuiteId = noisegate_protocol:suite_id(Suite),
+                    Header = noisegate_protocol:hello_header(SuiteId),
+                    Prologue = noisegate_protocol:prologue(Header, TargetName),
                     case handshake_state(Suite, Prologue, Keys, initiator) of
                         {ok, State0} ->
                             case enoise:step_handshake(State0, {send, <<>>}) of
                                 {ok, send, Msg1, State1} when byte_size(Msg1) =:= 32 ->
-                                    Hello = bouncer_protocol:hello(SuiteId, Msg1),
+                                    Hello = noisegate_protocol:hello(SuiteId, Msg1),
                                     case binary:part(Hello, 0, 8) =:= Header of
                                         true ->
                                             case gen_tcp:send(Socket, Hello) of
@@ -119,7 +119,7 @@ initiate_handshake(Socket, TargetName, Keys, Opts, Deadline) ->
 initiate_reply(Socket, TargetName, OwnName, Suite, State1, Opts, Deadline) ->
     case read_exact(Socket, 8, Deadline) of
         {ok, ReplyHeader} ->
-            case bouncer_protocol:parse_reply_header(ReplyHeader) of
+            case noisegate_protocol:parse_reply_header(ReplyHeader) of
                 {ok, Msg2Len} ->
                     case read_exact(Socket, Msg2Len, Deadline) of
                         {ok, Msg2} ->
@@ -141,10 +141,10 @@ initiate_reply(Socket, TargetName, OwnName, Suite, State1, Opts, Deadline) ->
     end.
 
 check_responder(Socket, TargetName, OwnName, Suite, State2, Payload, Opts) ->
-    case bouncer_protocol:decode_name(Payload) of
+    case noisegate_protocol:decode_name(Payload) of
         {ok, TargetName} ->
             RemoteKey = remote_public_key(State2),
-            case bouncer_keys:check_peer(TargetName, RemoteKey, Opts) of
+            case noisegate_keys:check_peer(TargetName, RemoteKey, Opts) of
                 allowed ->
                     send_msg3(Socket, OwnName, Suite, TargetName, RemoteKey, State2);
                 Reason ->
@@ -161,9 +161,9 @@ check_responder(Socket, TargetName, OwnName, Suite, State2, Payload, Opts) ->
 
 send_msg3(Socket, OwnName, Suite, RemoteName, RemoteKey, State2) ->
     case enoise:step_handshake(State2,
-                               {send, bouncer_protocol:encode_name(OwnName)}) of
+                               {send, noisegate_protocol:encode_name(OwnName)}) of
         {ok, send, Msg3, State3} ->
-            case gen_tcp:send(Socket, bouncer_protocol:msg3_frame(Msg3)) of
+            case gen_tcp:send(Socket, noisegate_protocol:msg3_frame(Msg3)) of
                 ok ->
                     case enoise_hs_state:finalize(State3) of
                         {ok, Split} ->
@@ -192,7 +192,7 @@ respond_handshake(Socket, OwnName, Keys, Opts, Deadline) ->
 respond_header(Socket, OwnName, Keys, Opts, AcceptedIds, Deadline) ->
     case read_exact(Socket, 8, Deadline) of
         {ok, HelloHeader} ->
-            case bouncer_protocol:parse_hello_header(HelloHeader, AcceptedIds) of
+            case noisegate_protocol:parse_hello_header(HelloHeader, AcceptedIds) of
                 {ok, Suite, 32} ->
                     respond_msg1(Socket, HelloHeader, OwnName, Suite, Keys, Opts, Deadline);
                 {reject, Status} ->
@@ -200,14 +200,14 @@ respond_header(Socket, OwnName, Keys, Opts, AcceptedIds, Deadline) ->
                                        1 -> unsupported_version;
                                        2 -> unsupported_suite
                                    end,
-                    case gen_tcp:send(Socket, bouncer_protocol:reply_reject(Status)) of
+                    case gen_tcp:send(Socket, noisegate_protocol:reply_reject(Status)) of
                         ok ->
                             {error, StatusReason};
                         {error, Reason} ->
                             {error, Reason}
                     end;
                 {error, Reason} ->
-                    logger:debug("bouncer_hs: closing connection with invalid hello header"),
+                    logger:debug("noisegate_hs: closing connection with invalid hello header"),
                     {error, Reason}
             end;
         {error, _} = Error ->
@@ -217,7 +217,7 @@ respond_header(Socket, OwnName, Keys, Opts, AcceptedIds, Deadline) ->
 respond_msg1(Socket, HelloHeader, OwnName, Suite, Keys, Opts, Deadline) ->
     case read_exact(Socket, 32, Deadline) of
         {ok, Msg1} ->
-            Prologue = bouncer_protocol:prologue(HelloHeader, OwnName),
+            Prologue = noisegate_protocol:prologue(HelloHeader, OwnName),
             case handshake_state(Suite, Prologue, Keys, responder) of
                 {ok, State0} ->
                     case enoise:step_handshake(State0, {rcvd, Msg1}) of
@@ -237,9 +237,9 @@ respond_msg1(Socket, HelloHeader, OwnName, Suite, Keys, Opts, Deadline) ->
 
 send_msg2(Socket, OwnName, Suite, State1, Opts, Deadline) ->
     case enoise:step_handshake(State1,
-                               {send, bouncer_protocol:encode_name(OwnName)}) of
+                               {send, noisegate_protocol:encode_name(OwnName)}) of
         {ok, send, Msg2, State2} ->
-            case gen_tcp:send(Socket, bouncer_protocol:reply_ok(Msg2)) of
+            case gen_tcp:send(Socket, noisegate_protocol:reply_ok(Msg2)) of
                 ok ->
                     receive_msg3(Socket, Suite, State2, Opts, Deadline);
                 {error, Reason} ->
@@ -252,7 +252,7 @@ send_msg2(Socket, OwnName, Suite, State1, Opts, Deadline) ->
 receive_msg3(Socket, Suite, State2, Opts, Deadline) ->
     case read_exact(Socket, 2, Deadline) of
         {ok, Prefix} ->
-            case bouncer_protocol:parse_msg3_prefix(Prefix) of
+            case noisegate_protocol:parse_msg3_prefix(Prefix) of
                 {ok, Msg3Len} ->
                     case read_exact(Socket, Msg3Len, Deadline) of
                         {ok, Msg3} ->
@@ -270,10 +270,10 @@ receive_msg3(Socket, Suite, State2, Opts, Deadline) ->
 process_msg3(Msg3, Suite, State2, Opts) ->
     case enoise:step_handshake(State2, {rcvd, Msg3}) of
         {ok, rcvd, Payload, State3} ->
-            case bouncer_protocol:decode_name(Payload) of
+            case noisegate_protocol:decode_name(Payload) of
                 {ok, RemoteName} ->
                     RemoteKey = remote_public_key(State3),
-                    case bouncer_keys:check_peer(RemoteName, RemoteKey, Opts) of
+                    case noisegate_keys:check_peer(RemoteName, RemoteKey, Opts) of
                         allowed ->
                             case enoise_hs_state:finalize(State3) of
                                 {ok, Split} ->
@@ -291,10 +291,10 @@ process_msg3(Msg3, Suite, State2, Opts) ->
     end.
 
 handshake_state(Suite, Prologue, Keys, Role) ->
-    try {bouncer_keys:public(Keys), bouncer_keys:secret(Keys)} of
+    try {noisegate_keys:public(Keys), noisegate_keys:secret(Keys)} of
         {<<_:32/binary>> = Public, <<_:32/binary>> = Secret} ->
             KeyPair = enoise_keypair:new(dh25519, Secret, Public),
-            enoise:handshake([{noise, bouncer_protocol:noise_name(Suite)},
+            enoise:handshake([{noise, noisegate_protocol:noise_name(Suite)},
                               {prologue, Prologue},
                               {s, KeyPair}],
                              Role);
@@ -318,15 +318,15 @@ accepted_suite_ids(Opts) ->
     Suites = maps:get(accept_suites, Opts, [aesgcm_sha512]),
     case is_list(Suites) andalso
          lists:all(fun supported_suite/1, Suites) of
-        true -> {ok, [bouncer_protocol:suite_id(Suite) || Suite <- Suites]};
+        true -> {ok, [noisegate_protocol:suite_id(Suite) || Suite <- Suites]};
         false -> {error, bad_options}
     end.
 
 supported_suite(Suite) ->
-    lists:member(Suite, bouncer_protocol:known_suites()).
+    lists:member(Suite, noisegate_protocol:known_suites()).
 
 valid_name(Name) ->
-    bouncer_keys:valid_node_name(Name).
+    noisegate_keys:valid_node_name(Name).
 
 setup_socket(Socket) ->
     case inet:setopts(Socket, [binary, {packet, 0}, {active, false}, {nodelay, true}]) of
@@ -356,7 +356,7 @@ finish(Socket, {error, _} = Error) ->
     Error.
 
 log_peer_rejection(Name, PublicKey, Reason) ->
-    Line = bouncer_keys:authorized_line(Name, PublicKey),
-    Fingerprint = bouncer_keys:fingerprint(PublicKey),
-    logger:warning("bouncer_hs: peer authorization failed (~p). Add to the authorized directory: ~tsFingerprint: ~ts",
+    Line = noisegate_keys:authorized_line(Name, PublicKey),
+    Fingerprint = noisegate_keys:fingerprint(PublicKey),
+    logger:warning("noisegate_hs: peer authorization failed (~p). Add to the authorized directory: ~tsFingerprint: ~ts",
                    [Reason, Line, Fingerprint]).
