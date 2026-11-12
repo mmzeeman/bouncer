@@ -1,4 +1,8 @@
-# Noise Gate Erlang Distribution (WIP) ![Noise Gate](doc/noise-gate.svg)
+<p align="center">
+  <img src="doc/noise-gate.svg" width="96" alt="Noise Gate">
+</p>
+
+# Noise Gate Erlang Distribution (WIP) 
 
 [![CI](https://github.com/mmzeeman/bouncer/actions/workflows/ci.yml/badge.svg)](https://github.com/mmzeeman/bouncer/actions/workflows/ci.yml)
 
