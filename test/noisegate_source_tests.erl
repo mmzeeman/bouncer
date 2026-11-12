@@ -1,4 +1,4 @@
--module(bouncer_source_tests).
+-module(noisegate_source_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 

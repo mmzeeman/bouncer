@@ -1,10 +1,10 @@
-%% Tests for the TRANSPORT FRAMING section of bouncer_protocol, using real
+%% Tests for the TRANSPORT FRAMING section of noisegate_protocol, using real
 %% enoise cipher states from a loopback handshake.
--module(bouncer_protocol_transport_tests).
+-module(noisegate_protocol_transport_tests).
 
 -include_lib("eunit/include/eunit.hrl").
 
--define(P, bouncer_protocol).
+-define(P, noisegate_protocol).
 -define(CHACHA, "Noise_XX_25519_ChaChaPoly_BLAKE2b").
 -define(AESGCM, "Noise_XX_25519_AESGCM_SHA512").
 -define(SUITES, [?CHACHA, ?AESGCM]).
@@ -1155,7 +1155,7 @@ unkeyed_cipher_state_is_refused_test() ->
 %%% ------------------------------------------------------------------
 
 section_is_pure_test() ->
-    Src = filename:join([code:lib_dir(bouncer), "src", "bouncer_protocol.erl"]),
+    Src = filename:join([code:lib_dir(noisegate), "src", "noisegate_protocol.erl"]),
     {ok, Bin} = file:read_file(Src),
     [_, Section] = binary:split(Bin, <<"%%% TRANSPORT FRAMING">>),
     Forbidden = [<<"gen_tcp">>, <<"gen_udp">>, <<"gen_sctp">>, <<"inet:">>, <<"socket:">>,

@@ -1,5 +1,5 @@
-%% Pure wire-format helpers for the bouncer Noise handshake.
--module(bouncer_protocol).
+%% Pure wire-format helpers for the noisegate Noise handshake.
+-module(noisegate_protocol).
 
 -ifdef(TEST).
 -export([unpad/2]).
@@ -50,7 +50,7 @@
     policy_error/0
 ]).
 
--define(HELLO_MAGIC, <<"BNCR">>).
+-define(HELLO_MAGIC, <<"NSGT">>).
 -define(VERSION, 1).
 -define(HELLO_HEADER_SIZE, 8).
 -define(MSG1_LENGTH, 32).
@@ -92,7 +92,7 @@ hello(SuiteId, Msg1) when is_binary(Msg1), byte_size(Msg1) =:= ?MSG1_LENGTH ->
 
 -spec parse_hello_header(binary(), [byte()]) ->
           {ok, suite(), 32} | {reject, 1} | {reject, 2} | {error, bad_hello_header}.
-parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
+parse_hello_header(<<"NSGT", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
   when SuiteId >= 1 andalso SuiteId =< 4
        andalso is_list(AcceptedIds) ->
     case lists:member(SuiteId, AcceptedIds) of
@@ -103,10 +103,10 @@ parse_hello_header(<<"BNCR", ?VERSION:8, SuiteId:8, Msg1Len:16>>, AcceptedIds)
         true ->
             {error, bad_hello_header}
     end;
-parse_hello_header(<<"BNCR", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
+parse_hello_header(<<"NSGT", Version:8, _SuiteId:8, _Msg1Len:16>>, _AcceptedIds)
   when Version =/= ?VERSION ->
     {reject, 1};
-parse_hello_header(<<"BNCR", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
+parse_hello_header(<<"NSGT", ?VERSION:8, _SuiteId:8, _Msg1Len:16>>, AcceptedIds)
   when is_list(AcceptedIds) ->
     %% Unsupported suite id.
     {reject, 2};
@@ -119,16 +119,16 @@ parse_hello_header(_, _) ->
 -spec parse_reply_header(binary()) ->
           {ok, 1..16#ffff} |
           {error, unsupported_version | unsupported_suite | bad_reply_header}.
-parse_reply_header(<<"BNCR", ?VERSION:8, 0:8, Msg2Len:16>>) ->
+parse_reply_header(<<"NSGT", ?VERSION:8, 0:8, Msg2Len:16>>) ->
     {Min, Max} = maps:get(msg2_length, limits()),
     case Msg2Len >= Min andalso Msg2Len =< Max of
         true -> {ok, Msg2Len};
         false -> {error, bad_reply_header}
     end;
-parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+parse_reply_header(<<"NSGT", ?VERSION:8, Status:8, 0:16>>)
   when Status =:= 1 ->
     {error, unsupported_version};
-parse_reply_header(<<"BNCR", ?VERSION:8, Status:8, 0:16>>)
+parse_reply_header(<<"NSGT", ?VERSION:8, Status:8, 0:16>>)
   when Status =:= 2 ->
     {error, unsupported_suite};
 parse_reply_header(_) ->
@@ -162,7 +162,7 @@ msg3_frame(Msg3) when is_binary(Msg3), byte_size(Msg3) =< ?MAX_FRAME_LENGTH ->
 prologue(<<_:?HELLO_HEADER_SIZE/binary>> = HelloHeader, Target)
   when is_binary(Target),
        byte_size(Target) >= ?MIN_NAME_LENGTH, byte_size(Target) =< ?MAX_NAME_LENGTH ->
-    <<"bouncer/1", 0, HelloHeader/binary, (byte_size(Target)):16, Target/binary>>.
+    <<"noisegate/1", 0, HelloHeader/binary, (byte_size(Target)):16, Target/binary>>.
 
 -spec encode_name(binary()) -> binary().
 encode_name(Name)  when is_binary(Name),
@@ -174,7 +174,7 @@ encode_name(Name)  when is_binary(Name),
 %% returns the name as a binary without creating an atom.
 -spec decode_name(binary()) -> {ok, binary()} | {error, bad_name | bad_payload}.
 decode_name(<<Len:16, Name:Len/binary>>) ->
-    case bouncer_keys:valid_node_name(Name) of
+    case noisegate_keys:valid_node_name(Name) of
         true -> {ok, Name};
         false -> {error, bad_name}
     end;
@@ -197,7 +197,7 @@ limits() ->
 %%% ==================================================================
 %%
 %% Pure functions only: no sockets, no processes, no application env, no
-%% reading of `-bouncer` flags or OS env. Settings from those layers are
+%% reading of `-noisegate` flags or OS env. Settings from those layers are
 %% handed in by the caller as maps (see sender_policy/1).
 %%
 %% What the fetched enoise source (aeternity/enoise master, 24413c2) offers:
@@ -337,7 +337,7 @@ limits() ->
 %% Validates sender settings and fills in defaults.
 %% 
 %% `Layers` is one settings map or a list of maps, highest precedence first
-%% (the caller passes Opts, then `-bouncer` flags, then env, which gives the
+%% (the caller passes Opts, then `-noisegate` flags, then env, which gives the
 %% precedence Opts > flag > env > default; this function reads none of them
 %% itself). A value is either the native term or the string form used by flags and
 %% env. Unknown keys are ignored.

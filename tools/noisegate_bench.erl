@@ -1,6 +1,6 @@
 %% Standalone distribution benchmark runner. The same worker code is loaded
 %% by the peer nodes so measurements run over distribution, not peer control.
--module(bouncer_bench).
+-module(noisegate_bench).
 
 -export([main/0, measure/5, measure_mailbox/5,
          start_mailbox_receiver/1, mailbox_receiver/1]).
@@ -29,7 +29,7 @@ main() ->
             usage(),
             halt(0);
         {error, Reason} ->
-            io:format(standard_error, "bouncer_bench: ~p~n", [Reason]),
+            io:format(standard_error, "noisegate_bench: ~p~n", [Reason]),
             usage(),
             halt(2);
         {ok, Options} ->
@@ -39,7 +39,7 @@ main() ->
             catch
                 Class:Reason:Stack ->
                     io:format(standard_error,
-                              "bouncer_bench failed (~p): ~p~n~p~n",
+                              "noisegate_bench failed (~p): ~p~n~p~n",
                               [Class, Reason, Stack]),
                     halt(1)
             end
@@ -87,15 +87,15 @@ run(Options) ->
             Total = length(Matrix),
             lists:foreach(
               fun({{Suite, Compression, ChunkSize}, Index}) ->
-                      io:format(standard_error, "bouncer ~s / ~s / chunk ~B (~B/~B)~n",
+                      io:format(standard_error, "noisegate ~s / ~s / chunk ~B (~B/~B)~n",
                                 [Suite, Compression, ChunkSize, Index, Total]),
                       Settings = #{suite => Suite, compression => Compression,
                                    chunk_size => ChunkSize},
                       _ = run_with_pair(
-                            bouncer, Root, Settings,
+                            noisegate, Root, Settings,
                             fun(PeerA, PeerB, NodeB) ->
                                     measure_workloads(PeerA, PeerB, NodeB, Workloads,
-                                                      Options, bouncer,
+                                                      Options, noisegate,
                                                       Settings, Device, Baseline)
                             end)
               end, lists:zip(Matrix, lists:seq(1, Total))),
@@ -114,7 +114,7 @@ make_root() ->
               end,
     Suffix = integer_to_list(erlang:system_time(microsecond)) ++ "_" ++
         integer_to_list(erlang:unique_integer([positive])),
-    Root = filename:join(TempDir, "bouncer_bench_" ++ Suffix),
+    Root = filename:join(TempDir, "noisegate_bench_" ++ Suffix),
     case file:make_dir(Root) of
         ok -> Root;
         {error, eexist} -> make_root();
@@ -189,9 +189,9 @@ emit_row(Device, inet_tls, _Settings, Workload, Kind, Size, Iterations,
                                  Iterations, Result) ++
               [maps:get(latency_ms, Result), maps:get(mib_per_second, Result)] ++
               comparison(Result, Tcp) ++ ["", "", "", ""]);
-emit_row(Device, bouncer, Settings, Workload, Kind, Size, Iterations,
+emit_row(Device, noisegate, Settings, Workload, Kind, Size, Iterations,
          Result, #{tcp := Tcp, tls := Tls}) ->
-    write_row(Device, row_prefix("bouncer", maps:get(suite, Settings),
+    write_row(Device, row_prefix("noisegate", maps:get(suite, Settings),
                                  maps:get(compression, Settings),
                                  maps:get(chunk_size, Settings), Workload, Kind,
                                  Size, Iterations, Result) ++
@@ -284,12 +284,12 @@ start_pair(Carrier, Root, Settings) ->
             case Carrier of
                 inet_tcp -> ok;
                 inet_tls -> ok;
-                bouncer ->
-                    {ok, _} = bouncer_keys:add_peer(
-                                NameA, bouncer_keys:public(KeysA),
+                noisegate ->
+                    {ok, _} = noisegate_keys:add_peer(
+                                NameA, noisegate_keys:public(KeysA),
                                 #{authorized_dirs => AuthB, node_name => NameB}),
-                    {ok, _} = bouncer_keys:add_peer(
-                                NameB, bouncer_keys:public(KeysB),
+                    {ok, _} = noisegate_keys:add_peer(
+                                NameB, noisegate_keys:public(KeysB),
                                 #{authorized_dirs => AuthA, node_name => NameA})
             end,
             {PeerA, PeerB, NodeB}
@@ -316,20 +316,20 @@ start_node(Carrier, Root, Suffix, Settings) ->
                 {undefined, []};
             inet_tls ->
                 {undefined, ["-ssl_dist_optfile", tls_optfile(Root)]};
-            bouncer ->
-                {ok, KeyInfo} = bouncer_keys:load_or_generate(
+            noisegate ->
+                {ok, KeyInfo} = noisegate_keys:load_or_generate(
                                   NodeName, #{dir => Dir, generate => true}),
                 {KeyInfo,
-                 ["-bouncer", "dir", Dir,
-                  "-bouncer", "authorized_dirs", AuthDir,
-                  "-bouncer", "generate", "false",
-                  "-bouncer", "accept_compression", "true",
-                  "-bouncer", "padding", "none", % Not configurable in the benchmark
-                  "-bouncer", "accept_suites",
+                 ["-noisegate", "dir", Dir,
+                  "-noisegate", "authorized_dirs", AuthDir,
+                  "-noisegate", "generate", "false",
+                  "-noisegate", "accept_compression", "true",
+                  "-noisegate", "padding", "none", % Not configurable in the benchmark
+                  "-noisegate", "accept_suites",
                   string:join(?SUITES, ","),
-                  "-bouncer", "suite", maps:get(suite, Settings),
-                  "-bouncer", "compression", maps:get(compression, Settings),
-                  "-bouncer", "chunk_size", integer_to_list(maps:get(chunk_size, Settings))]}
+                  "-noisegate", "suite", maps:get(suite, Settings),
+                  "-noisegate", "compression", maps:get(compression, Settings),
+                  "-noisegate", "chunk_size", integer_to_list(maps:get(chunk_size, Settings))]}
         end,
     Dist = atom_to_list(Carrier),
     Args = ["+S", "4:4",
@@ -616,7 +616,7 @@ valid_compression(_) -> false.
 
 usage() ->
     io:format(standard_error,
-              "Usage: tools/bouncer_bench [options]~n"
+              "Usage: tools/noisegate_bench [options]~n"
               "  --suites comma,list       Noise suites (default: all four)~n"
               "  --compressions comma,list none,zlib:N (default: none,zlib:256,zlib:1024)~n"
               "  --chunk-sizes comma,list  1..65518 (default: 1024,16384,65518)~n"

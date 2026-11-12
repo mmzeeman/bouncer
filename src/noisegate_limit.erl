@@ -1,23 +1,23 @@
 %% Process-free admission control for pending handshakes.
--module(bouncer_limit).
+-module(noisegate_limit).
 
 -export([new/1, acquire/1, release/0, release/1]).
 -export_type([handle/0]).
 
--opaque handle() :: {bouncer_limit, pos_integer(), atomics:atomics_ref()}.
+-opaque handle() :: {noisegate_limit, pos_integer(), atomics:atomics_ref()}.
 -define(ACQUISITIONS, {?MODULE, acquisitions}).
 
 %% Creates a counters handle with a fixed maximum number of pending handshakes.
 -spec new(pos_integer()) -> handle().
 new(Limit) when is_integer(Limit), Limit > 0 ->
-    {bouncer_limit, Limit, atomics:new(1, [])}.
+    {noisegate_limit, Limit, atomics:new(1, [])}.
 
 %% Acquires one pending-handshake slot. The carrier passes a limit_handle in Opts.
 -spec acquire(map()) -> ok | {error, busy}.
 acquire(Opts) when is_map(Opts) ->
     case handle(Opts) of
         {ok, Handle} ->
-            {bouncer_limit, HandleLimit, Ref} = Handle,
+            {noisegate_limit, HandleLimit, Ref} = Handle,
             Limit = maps:get(max_pending, Opts, HandleLimit),
             case is_integer(Limit) andalso Limit > 0 of
                 true ->
@@ -56,11 +56,11 @@ release(Opts) when is_map(Opts) ->
         {ok, Handle} -> release(Handle);
         error -> ok
     end;
-release({bouncer_limit, _Limit, _Ref} = Handle) ->
+release({noisegate_limit, _Limit, _Ref} = Handle) ->
     forget(Handle),
     release_counter(Handle).
 
-release_counter({bouncer_limit, _Limit, Ref}) ->
+release_counter({noisegate_limit, _Limit, Ref}) ->
     atomics:sub(Ref, 1, 1),
     ok.
 
@@ -89,14 +89,14 @@ put_or_erase(Stack) ->
 
 handle(Opts) ->
     case maps:find(limit_handle, Opts) of
-        {ok, {bouncer_limit, Limit, _Ref} = Handle}
+        {ok, {noisegate_limit, Limit, _Ref} = Handle}
           when is_integer(Limit), Limit > 0 ->
             {ok, Handle};
         {ok, _} ->
             error;
         error ->
-            case bouncer_dist_config:limit_handle() of
-                {ok, {bouncer_limit, Limit, _Ref} = Handle}
+            case noisegate_dist_config:limit_handle() of
+                {ok, {noisegate_limit, Limit, _Ref} = Handle}
                   when is_integer(Limit), Limit > 0 ->
                     {ok, Handle};
                 _ ->

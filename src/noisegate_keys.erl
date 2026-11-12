@@ -1,10 +1,10 @@
--module(bouncer_keys).
+-module(noisegate_keys).
 
 %% Key management and peer authorization for the Noise (X25519) distribution carrier.
 %% 
 %% This module is called while the VM is still booting (from `listen/2`), so it is
 %% made of pure functions and file I/O only: no processes, no ETS, no application
-%% environment. Settings come from an `Opts` map, `-bouncer Key Value` init
+%% environment. Settings come from an `Opts` map, `-noisegate Key Value` init
 %% arguments, `BOUNCER_*` environment variables, and defaults (in that order).
 %% 
 %% Node names and keys received from the network are untrusted: they are never
@@ -64,7 +64,7 @@
 %% Directory holding the identity key of `NodeName`.
 %% 
 %% Uses the `dir` setting when present, otherwise
-%% `filename:basedir(user_config, "bouncer")/NodeName`. Raises `badarg` when a
+%% `filename:basedir(user_config, "noisegate")/NodeName`. Raises `badarg` when a
 %% default path is needed and `NodeName` is not a valid node name.
 -spec node_key_dir(node_name(), opts()) -> file:filename().
 node_key_dir(NodeName, Opts) ->
@@ -76,7 +76,7 @@ node_key_dir(NodeName, Opts) ->
                 {ok, Bin} ->
                     case valid_node_name(Bin) of
                         true ->
-                            filename:join(filename:basedir(user_config, "bouncer"),
+                            filename:join(filename:basedir(user_config, "noisegate"),
                                           binary_to_list(Bin));
                         false ->
                             erlang:error(badarg)
@@ -113,7 +113,7 @@ generate_enabled(Opts) ->
         {ok, "false"} ->
             false;
         {ok, Other} ->
-            logger:warning("bouncer_keys: invalid value for generate: ~p, using true", [Other]),
+            logger:warning("noisegate_keys: invalid value for generate: ~p, using true", [Other]),
             true;
         error ->
             true
@@ -132,9 +132,9 @@ setting(Key, Opts) ->
             end
     end.
 
-%% Each `-bouncer` occurrence is one Key/Value pair; also tolerate several pairs in one group.
+%% Each `-noisegate` occurrence is one Key/Value pair; also tolerate several pairs in one group.
 flag(Key) ->
-    case init:get_argument(bouncer) of
+    case init:get_argument(noisegate) of
         {ok, Groups} ->
             case [V || G <- Groups, {K, V} <- pairs(G), K =:= Key] of
                 [V | _] -> {ok, V};
@@ -179,7 +179,7 @@ dirs_for(Opts) ->
         authorized_dirs(local_name(Opts), Opts)
     catch
         error:badarg ->
-            logger:warning("bouncer_keys: cannot determine authorized directories"),
+            logger:warning("noisegate_keys: cannot determine authorized directories"),
             []
     end.
 
@@ -242,7 +242,7 @@ publish_key(Name, Dir, Path, Secret) ->
             Info = key_info(Secret, true),
             Pub = public(Info),
             Fp = fingerprint(Info),
-            logger:notice("bouncer_keys: generated new identity key ~ts~n"
+            logger:notice("noisegate_keys: generated new identity key ~ts~n"
                           "Add this line to the authorized directory of other nodes:~n~ts"
                           "Fingerprint: ~ts",
                           [Path, authorized_line(Name, Pub), Fp]),
@@ -341,7 +341,7 @@ print_public() ->
     end.
 
 fail(Fmt, Args) ->
-    io:format(standard_error, "bouncer_keys: " ++ Fmt ++ "~n", Args),
+    io:format(standard_error, "noisegate_keys: " ++ Fmt ++ "~n", Args),
     erlang:halt(1).
 
 %%
@@ -671,7 +671,7 @@ blank(Line) ->
     re:run(Line, <<"^[ \t\r]*$">>, [{capture, none}]) =:= match.
 
 warn(Path, Msg) ->
-    logger:warning("bouncer_keys: ~ts: ~ts", [Path, Msg]).
+    logger:warning("noisegate_keys: ~ts: ~ts", [Path, Msg]).
 
 %%
 %% File helpers
@@ -731,7 +731,7 @@ write_synced(Fd, Tmp, Mode, Content) ->
     end.
 
 tmp_name() ->
-    ".bouncer-tmp-" ++ os:getpid() ++ "-"
+    ".noisegate-tmp-" ++ os:getpid() ++ "-"
         ++ binary_to_list(binary:encode_hex(crypto:strong_rand_bytes(8), lowercase)).
 
 to_list(B) when is_binary(B) -> binary_to_list(B);

@@ -1,5 +1,5 @@
 %% Runs the escript built by `rebar3 escriptize` through a port.
--module(bouncer_guests_SUITE).
+-module(noisegate_guests_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
@@ -14,12 +14,12 @@ all() ->
 init_per_suite(Config) ->
     [Root, _] = string:split(proplists:get_value(data_dir, Config), "/_build/"),
     Out = os:cmd("cd " ++ Root ++ " && rebar3 escriptize 2>&1"),
-    Script = filename:join([Root, "_build", "default", "bin", "bouncer_guests"]),
+    Script = filename:join([Root, "_build", "default", "bin", "noisegate_guests"]),
     case filelib:is_regular(Script) of
         true -> ok;
         false -> ct:fail({escriptize_failed, Out})
     end,
-    Base = "/tmp/bouncer_guests_ct_" ++ integer_to_list(erlang:unique_integer([positive])),
+    Base = "/tmp/noisegate_guests_ct_" ++ integer_to_list(erlang:unique_integer([positive])),
     ok = file:make_dir(Base),
     [{script, Script}, {base, Base} | Config].
 

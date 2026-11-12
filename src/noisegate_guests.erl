@@ -1,11 +1,11 @@
 
--module(bouncer_guests).
+-module(noisegate_guests).
 
 % Command line tool to manage the key directory and the authorized directories
-% ("guests") of a node. A thin layer over `bouncer_keys`; it only edits files and
+% ("guests") of a node. A thin layer over `noisegate_keys`; it only edits files and
 % does not talk to a running node.
 %
-% Built as an escript (`rebar3 escriptize`). Uses only `bouncer_keys`, `crypto`,
+% Built as an escript (`rebar3 escriptize`). Uses only `noisegate_keys`, `crypto`,
 % `logger` and the standard library. Secret key material is never printed.
 %
 % Exit codes: 0 ok, 1 not found, 2 usage error, 3 error (I/O, permissions,
@@ -13,7 +13,7 @@
 
 -export([main/1, run/2]).
 
--define(PLACEHOLDER_NODE, <<"bouncer_guests@localhost">>).
+-define(PLACEHOLDER_NODE, <<"noisegate_guests@localhost">>).
 -define(MAX_STDIN, 65536).
 
 -type env() :: #{stdin => binary() | fun(() -> binary())}.
@@ -25,7 +25,7 @@
 
 -spec main([string()]) -> no_return().
 main(Args) ->
-    %% bouncer_keys logs every skipped file; the tool reports them itself.
+    %% noisegate_keys logs every skipped file; the tool reports them itself.
     logger:set_primary_config(level, none),
     {Code, Out, Err} = run(Args, #{stdin => fun read_stdin/0}),
     io:put_chars(standard_io, Out),
@@ -139,7 +139,7 @@ printable(S) ->
     [case C < 32 orelse C =:= 127 of true -> $?; false -> C end || C <- S].
 
 usage() ->
-    "Usage: bouncer_guests <command> [options]\n"
+    "Usage: noisegate_guests <command> [options]\n"
     "\n"
     "Commands:\n"
     "  init --node NAME [--no-generate]   create the directories and the identity key,\n"
@@ -175,12 +175,12 @@ command("init", {O, Pos}, _Env) ->
     no_positional(Pos),
     Node = require_node(O),
     Opts = keys_opts(O, Node),
-    case bouncer_keys:ensure_dirs(Node, Opts) of
+    case noisegate_keys:ensure_dirs(Node, Opts) of
         ok -> ok;
         {error, DirErr} -> fail(3, DirErr)
     end,
     Generate = not maps:is_key(no_generate, O),
-    case bouncer_keys:load_or_generate(Node, Opts#{generate => Generate}) of
+    case noisegate_keys:load_or_generate(Node, Opts#{generate => Generate}) of
         {ok, Info} ->
             {0, identity_output(Node, Info, O), []};
         {error, {no_key, _}} when not Generate ->
@@ -209,8 +209,8 @@ no_positional([A | _]) -> throw({usage, "unexpected argument: " ++ printable(A)}
 %%% init / show --self
 
 identity_output(Node, Info, O) ->
-    Line = string:trim(bouncer_keys:authorized_line(Node, bouncer_keys:public(Info)), trailing, "\n"),
-    Fp = bouncer_keys:fingerprint(Info),
+    Line = string:trim(noisegate_keys:authorized_line(Node, noisegate_keys:public(Info)), trailing, "\n"),
+    Fp = noisegate_keys:fingerprint(Info),
     case maps:is_key(quiet, O) of
         true -> [Line, "\n"];
         false -> [Line, "\n# fingerprint ", Fp, "\n"]
@@ -218,11 +218,11 @@ identity_output(Node, Info, O) ->
 
 cmd_show_self(O) ->
     Node = require_node(O),
-    case bouncer_keys:load_or_generate(Node, (keys_opts(O, Node))#{generate => false}) of
+    case noisegate_keys:load_or_generate(Node, (keys_opts(O, Node))#{generate => false}) of
         {ok, Info} ->
             {0, identity_output(Node, Info, O), []};
         {error, {no_key, Path}} ->
-            fail(1, io_lib:format("no identity key at ~ts; run `bouncer_guests init --node ~ts`",
+            fail(1, io_lib:format("no identity key at ~ts; run `noisegate_guests init --node ~ts`",
                                   [Path, Node]));
         {error, R} ->
             fail(3, R)
@@ -235,10 +235,10 @@ cmd_add(O, Pos, Env) ->
     Name = valid_name(Name0),
     Key = decode_key(Key0),
     Comment = comment(O, LineComment),
-    Fp = bouncer_keys:fingerprint(Key),
+    Fp = noisegate_keys:fingerprint(Key),
     check_expected(O, Fp, Name),
     Opts = keys_opts(O, undefined),
-    FirstDir = case bouncer_keys:authorized_dirs(node_for(O), Opts) of
+    FirstDir = case noisegate_keys:authorized_dirs(node_for(O), Opts) of
                    [D | _] -> D;
                    [] -> fail(2, "no authorized directory")
                end,
@@ -247,7 +247,7 @@ cmd_add(O, Pos, Env) ->
             {ok, Existing} ->
                 {"already present", Existing};
             none ->
-                case bouncer_keys:add_peer(Name, Key, Opts#{comment => Comment}) of
+                case noisegate_keys:add_peer(Name, Key, Opts#{comment => Comment}) of
                     {ok, Path} -> {"added", Path};
                     {error, invalid_comment} -> fail(2, "invalid comment");
                     {error, R} -> fail(3, R)
@@ -322,7 +322,7 @@ check_expected(O, Fp, Name) ->
     end.
 
 find_entry(Name, Key, Dir, Opts) ->
-    case bouncer_keys:list_peers(Opts) of
+    case noisegate_keys:list_peers(Opts) of
         {ok, Entries, _} ->
             case [F || #{name := N, key := K, dir := D, file := F} <- Entries,
                        N =:= Name, K =:= Key, D =:= Dir] of
@@ -366,7 +366,7 @@ cmd_remove(O, Pos) ->
                 end
         end,
     lists:foreach(fun(F) ->
-                      case bouncer_keys:remove_peer(Name, F, Opts) of
+                      case noisegate_keys:remove_peer(Name, F, Opts) of
                           ok -> ok;
                           {error, not_found} -> ok;
                           {error, R} -> fail(3, R)
@@ -408,7 +408,7 @@ cmd_show(O, Pos) ->
 %%% list
 
 cmd_list(O) ->
-    case bouncer_keys:list_peers(keys_opts(O, undefined)) of
+    case noisegate_keys:list_peers(keys_opts(O, undefined)) of
         {ok, Entries, Skips} ->
             Sorted = lists:sort(fun(#{name := N1, fingerprint := F1, file := P1},
                                     #{name := N2, fingerprint := F2, file := P2}) ->
@@ -464,7 +464,7 @@ quiet(O, Text) ->
     end.
 
 entries_for(Name, Opts) ->
-    case bouncer_keys:list_peers(Opts) of
+    case noisegate_keys:list_peers(Opts) of
         {ok, Entries, _Skips} ->
             lists:sort(fun(#{fingerprint := A, file := PA}, #{fingerprint := B, file := PB}) ->
                            {A, PA} =< {B, PB}
@@ -481,7 +481,7 @@ valid_name(Str) ->
               B when is_binary(B) -> B;
               _ -> <<>>
           end,
-    case bouncer_keys:valid_node_name(Bin) of
+    case noisegate_keys:valid_node_name(Bin) of
         true -> Bin;
         false -> throw({usage, "invalid node name: " ++ printable(Str)})
     end.

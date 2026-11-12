@@ -1,5 +1,5 @@
 %% Noise-authenticated Erlang distribution over TCP.
--module(bouncer_dist).
+-module(noisegate_dist).
 
 -export([
     childspecs/0,
@@ -31,15 +31,15 @@
 -include_lib("kernel/include/dist_util.hrl").
 
 -define(DRAIN_MAX_PACKETS, 64).
--define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with bouncer_bench
+-define(SEND_BATCH_MAX, 262144).  %% 256 KiB per send call; Fixed for now.. tune with noisegate_bench
 
 -record(controller_state, {
     socket    :: inet:socket(),
     role      :: responder | initiator,
     own_name  :: binary(),
 
-    receiver  :: bouncer_protocol:receiver(),
-    sender    :: bouncer_protocol:sender(),
+    receiver  :: noisegate_protocol:receiver(),
+    sender    :: noisegate_protocol:sender(),
 
     reader_pid :: undefined | pid(),
 
@@ -54,7 +54,7 @@ listen(Name) ->
 -spec listen(atom() | binary() | string(), atom() | binary() | string()) -> term().
 listen(Name, Host) ->
     NodeName = node_name(Name, Host),
-    case bouncer_dist_config:configure_node(NodeName) of
+    case noisegate_dist_config:configure_node(NodeName) of
         ok ->
             inet_tcp_dist:listen(Name, Host);
         {error, _} = Error ->
@@ -62,11 +62,11 @@ listen(Name, Host) ->
     end.
 
 childspecs() ->
-    bouncer_dist_sup:childspecs().
+    noisegate_dist_sup:childspecs().
 
 -spec accept(term()) -> term().
 accept(ListenSocket) ->
-    case bouncer_dist_config:connection_settings() of
+    case noisegate_dist_config:connection_settings() of
         {ok, Settings} ->
             spawn_opt(?MODULE, accept_loop, [self(), ListenSocket, Settings],
                       [link, {priority, max}]);
@@ -86,13 +86,13 @@ accept_loop(Kernel, ListenSocket, Settings) ->
 
 accept_controller(Kernel, Socket, Settings) ->
     receive
-        {bouncer_settings_request, Pid} ->
-            case bouncer_dist_config:connection_settings() of
+        {noisegate_settings_request, Pid} ->
+            case noisegate_dist_config:connection_settings() of
                 {ok, CurrentSettings} ->
-                    Pid ! {bouncer_settings, self(), CurrentSettings},
+                    Pid ! {noisegate_settings, self(), CurrentSettings},
                     accept_controller(Kernel, Socket, CurrentSettings);
                 {error, Reason} ->
-                    Pid ! {bouncer_settings_error, self(), Reason},
+                    Pid ! {noisegate_settings_error, self(), Reason},
                     accept_controller(Kernel, Socket, Settings)
             end;
         {Kernel, controller, Pid} ->
@@ -110,12 +110,12 @@ accept_controller(Kernel, Socket, Settings) ->
 
 -spec accept_connection(pid(), term(), atom(), term(), term()) -> term().
 accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
-    AcceptPid ! {bouncer_settings_request, self()},
+    AcceptPid ! {noisegate_settings_request, self()},
     Settings =
         receive
-            {bouncer_settings, AcceptPid, Settings0} ->
+            {noisegate_settings, AcceptPid, Settings0} ->
                 {ok, Settings0};
-            {bouncer_settings_error, AcceptPid, Reason} ->
+            {noisegate_settings_error, AcceptPid, Reason} ->
                 {error, Reason}
         after SetupTime ->
             {error, settings_not_initialized}
@@ -127,7 +127,7 @@ accept_connection(AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
 -spec do_accept(pid(), pid(), term(), atom(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime) ->
     do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime,
-              bouncer_dist_config:connection_settings()).
+              noisegate_dist_config:connection_settings()).
 
 -spec do_accept(pid(), pid(), term(), atom(), term(), term(), term()) -> term().
 do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime, SettingsResult) ->
@@ -135,7 +135,7 @@ do_accept(Kernel, AcceptPid, Socket, MyNode, Allowed, SetupTime, SettingsResult)
         {AcceptPid, controller} ->
             case SettingsResult of
                 {ok, Settings} ->
-                    case bouncer_dist_config:key_info() of
+                    case noisegate_dist_config:key_info() of
                         {ok, Keys} ->
                             do_accept_socket(Kernel, Socket, MyNode,
                                              Allowed, SetupTime,
@@ -162,7 +162,7 @@ do_accept_socket(Kernel, Socket, MyNode, Allowed, SetupTime, Settings, Keys) ->
 accept_handshake(Kernel, Socket, MyNode, Allowed, SetupTime,
                  #{node_name := OwnName, hs_opts := HsOptions} = Settings, Keys) ->
     Timer = dist_util:start_timer(SetupTime),
-    case bouncer_hs:respond(Socket, OwnName, Keys, HsOptions) of
+    case noisegate_hs:respond(Socket, OwnName, Keys, HsOptions) of
         {ok, Result} ->
             start_dist_handshake(Kernel, Socket, MyNode, undefined, Allowed, Timer, Settings, Result, responder);
         {error, Reason} ->
@@ -177,9 +177,9 @@ setup(Node, Type, MyNode, LongOrShortNames, SetupTime) ->
 
 -spec do_setup(pid(), atom(), atom(), atom(), boolean(), term()) -> term().
 do_setup(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime) ->
-    case bouncer_dist_config:connection_settings() of
+    case noisegate_dist_config:connection_settings() of
         {ok, Settings} ->
-            case bouncer_dist_config:key_info() of
+            case noisegate_dist_config:key_info() of
                 {ok, Keys} ->
                     setup_connection(Kernel, Node, Type, MyNode,
                                      LongOrShortNames, SetupTime, Settings,
@@ -202,7 +202,7 @@ setup_connection(Kernel, Node, Type, MyNode, LongOrShortNames, SetupTime,
                 {ok, Socket} ->
                     InitiateOpts = maps:get(hs_opts, Settings),
                     TargetName = atom_to_binary(Node, utf8),
-                    case bouncer_hs:initiate(Socket, TargetName,
+                    case noisegate_hs:initiate(Socket, TargetName,
                                              Keys,
                                              InitiateOpts) of
                         {ok, Result} ->
@@ -264,8 +264,8 @@ initialize_controller(Socket, Result, Settings, Role) ->
         #{send := Send, recv := Recv} = Result,
         #{sender_policy := SP, receiver_policy := RP} = Settings,
 
-        Sender = bouncer_protocol:new_sender(Send, SP),
-        Receiver = bouncer_protocol:new_receiver(Recv, RP),
+        Sender = noisegate_protocol:new_sender(Send, SP),
+        Receiver = noisegate_protocol:new_receiver(Recv, RP),
 
         Ref = make_ref(),
         State = #controller_state{ own_name = maps:get(node_name, Settings),
@@ -309,7 +309,7 @@ controller_init(Parent, Ref, #controller_state{ socket = Socket, receiver = Rece
     Parent ! {Ref, {ok, self(), Reader}},
 
     % The controller itself is the sender.
-    State1 = State#controller_state{ sender = bouncer_protocol:tx_start(Sender),
+    State1 = State#controller_state{ sender = noisegate_protocol:tx_start(Sender),
                                      reader_pid = Reader },
 
     % Do the dist handshake.
@@ -422,8 +422,8 @@ drain_batch(Pending, PendingBytes, Count, #controller_state{ socket = Socket, ow
             end
     end.
 
--spec write_packet(inet:socket(), bouncer_protocol:sender(), iodata()) ->
-          {ok, bouncer_protocol:sender()} | {error, term()}.
+-spec write_packet(inet:socket(), noisegate_protocol:sender(), iodata()) ->
+          {ok, noisegate_protocol:sender()} | {error, term()}.
 write_packet(Socket, Sender, Packet) ->
     case tx_frames(Socket, Sender, Packet, [], 0) of
         {ok, Sender1, Pending, _PendingBytes} ->
@@ -438,7 +438,7 @@ write_packet(Socket, Sender, Packet) ->
     end.
 
 tx_frames(Socket, Sender, Packet, Pending, PendingBytes) ->
-    try bouncer_protocol:tx_packet(Packet) of
+    try noisegate_protocol:tx_packet(Packet) of
         Tx ->
             tx_next_frames(Socket, Sender, Tx, Pending, PendingBytes)
     catch
@@ -447,7 +447,7 @@ tx_frames(Socket, Sender, Packet, Pending, PendingBytes) ->
     end.
 
 tx_next_frames(Socket, Sender, Tx, Acc, Bytes) ->
-    case bouncer_protocol:tx_next(Sender, Tx) of
+    case noisegate_protocol:tx_next(Sender, Tx) of
         {Frame, Sender1, more, Tx1} ->
             Acc1 = [Frame | Acc],
             Bytes1 = Bytes + erlang:iolist_size(Frame),
@@ -471,9 +471,9 @@ drain_send_failed(Socket, OwnName, Reason) ->
     gen_tcp:close(Socket),
     exit({send_error, Reason}).
 
--spec start_reader(inet:socket(), bouncer_protocol:receiver(), term(), binary()) -> term().
+-spec start_reader(inet:socket(), noisegate_protocol:receiver(), term(), binary()) -> term().
 start_reader(Socket, Receiver0, Role, OwnName) ->
-    Receiver = bouncer_protocol:rx_start(Receiver0),
+    Receiver = noisegate_protocol:rx_start(Receiver0),
     reader_loop(Socket, Receiver, Role, OwnName, []).
 
 reader_loop(Socket, Receiver, Role, OwnName, Events) ->
@@ -493,7 +493,7 @@ read_handshake(Socket, Receiver, Role, OwnName, From, Ref, Timeout, Events) ->
         {none, Rest} ->
             case gen_tcp:recv(Socket, 0, Timeout) of
                 {ok, Bytes} ->
-                    case bouncer_protocol:rx_feed(Receiver, Bytes) of
+                    case noisegate_protocol:rx_feed(Receiver, Bytes) of
                         {ok, NewEvents, Receiver1} ->
                             read_handshake(Socket, Receiver1, Role, OwnName,
                                            From, Ref, Timeout, Rest ++ NewEvents);
@@ -528,12 +528,12 @@ take_packet([tick | Rest]) ->
 take_packet([{packet, Data} | Rest]) ->
     {packet, iolist_to_binary(Data), Rest}.
 
--spec receive_data(inet:socket(), bouncer_protocol:receiver(), erlang:dist_handle(),
+-spec receive_data(inet:socket(), noisegate_protocol:receiver(), erlang:dist_handle(),
                    binary()) -> term().
 receive_data(Socket, Receiver, DHandle, OwnName) ->
     case gen_tcp:recv(Socket, 0, infinity) of
         {ok, Bytes} ->
-            case bouncer_protocol:rx_feed(Receiver, Bytes) of
+            case noisegate_protocol:rx_feed(Receiver, Bytes) of
                 {ok, Events, Receiver1} ->
                     deliver_events(Events, DHandle),
                     ?MODULE:receive_data(Socket, Receiver1, DHandle, OwnName);
@@ -566,7 +566,7 @@ send_frames(Socket, Frames) ->
     gen_tcp:send(Socket, lists:reverse(Frames)).
 
 send_tick(Socket, Sender) ->
-    {Frame, Sender1} = bouncer_protocol:tx_tick(Sender),
+    {Frame, Sender1} = noisegate_protocol:tx_tick(Sender),
     case gen_tcp:send(Socket, Frame) of
         ok -> {ok, Sender1};
         {error, Reason} -> {error, Reason}
@@ -708,20 +708,20 @@ is_node_name(Node) ->
 -spec stop_connection(term(), term()) -> no_return().
 stop_connection(Node, Reason) ->
     Fingerprint = identity_fingerprint(),
-    logger:warning("bouncer_dist: connection failed node=~p fingerprint=~ts reason=~p",
+    logger:warning("noisegate_dist: connection failed node=~p fingerprint=~ts reason=~p",
                    [Node, Fingerprint, Reason]),
     dist_util:shutdown(?MODULE, ?LINE, {Node, Reason}).
 
 log_rx_error(NodeName, Reason) ->
-    logger:warning("bouncer_dist: receive failed node=~ts fingerprint=~ts reason=~p",
+    logger:warning("noisegate_dist: receive failed node=~ts fingerprint=~ts reason=~p",
                    [NodeName, identity_fingerprint(), Reason]).
 
 log_io_error(NodeName, Reason) ->
-    logger:warning("bouncer_dist: transport failed node=~ts fingerprint=~ts reason=~p",
+    logger:warning("noisegate_dist: transport failed node=~ts fingerprint=~ts reason=~p",
                    [NodeName, identity_fingerprint(), Reason]).
 
 identity_fingerprint() ->
-    case bouncer_dist_config:get(fingerprint) of
+    case noisegate_dist_config:get(fingerprint) of
         {ok, Fingerprint} ->
             Fingerprint;
         _ ->

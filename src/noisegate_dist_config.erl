@@ -1,4 +1,4 @@
--module(bouncer_dist_config).
+-module(noisegate_dist_config).
 -behaviour(gen_server).
 
 -export([
@@ -15,7 +15,7 @@
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--define(TABLE, bouncer_dist_config).
+-define(TABLE, noisegate_dist_config).
 
 -record(state, {
     key_info = undefined
@@ -25,9 +25,9 @@ create_config_table() ->
     _ = ets:new(?TABLE, [set, public, named_table, {read_concurrency, true}]).
 
 load_settings() ->
-    case bouncer_settings:parse() of
+    case noisegate_settings:parse() of
         {ok, Parsed} ->
-            LimitHandle = bouncer_limit:new(maps:get(max_pending, Parsed)),
+            LimitHandle = noisegate_limit:new(maps:get(max_pending, Parsed)),
             Values = maps:merge(maps:without([key_options, hs_opts], Parsed),
                                 maps:get(hs_opts, Parsed)),
             Published = maps:merge(Values, maps:get(key_options, Parsed)),
@@ -35,7 +35,7 @@ load_settings() ->
                                        maps:to_list(Published)]),
             ok;
         {error, Reason} ->
-            logger:error("bouncer distribution settings are invalid: ~p",
+            logger:error("noisegate distribution settings are invalid: ~p",
                          [Reason]),
             {error, Reason}
     end.
@@ -90,7 +90,7 @@ init([]) ->
             case load_node(NodeName, State0) of
                 {ok, State1} -> {ok, State1};
                 {error, Reason} ->
-                    logger:error("bouncer distribution config failed: ~p",
+                    logger:error("noisegate distribution config failed: ~p",
                                  [Reason]),
                     {stop, Reason}
             end
@@ -136,15 +136,15 @@ load_node(NodeName, State) ->
     end.
 
 load_node_key(NodeName, KeyOptions, State) ->
-    case bouncer_keys:load_or_generate(NodeName, KeyOptions) of
+    case noisegate_keys:load_or_generate(NodeName, KeyOptions) of
         {ok, KeyInfo} ->
-            Fingerprint = bouncer_keys:fingerprint(KeyInfo),
+            Fingerprint = noisegate_keys:fingerprint(KeyInfo),
             true = ets:insert(?TABLE, [{node_name, NodeName},
                                        {own_name, NodeName},
                                        {fingerprint, Fingerprint}]),
             {ok, Suite} = table_value(suite),
             {ok, AcceptSuites} = table_value(accept_suites),
-            logger:notice("bouncer_dist: suite=~p accept_suites=~p fingerprint=~ts",
+            logger:notice("noisegate_dist: suite=~p accept_suites=~p fingerprint=~ts",
                           [Suite, AcceptSuites, Fingerprint]),
             {ok, State#state{key_info = KeyInfo}};
         {error, _} = Error ->

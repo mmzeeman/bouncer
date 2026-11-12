@@ -1,5 +1,5 @@
 %% Common Test coverage for distribution over the encrypted carrier.
--module(bouncer_dist_SUITE).
+-module(noisegate_dist_SUITE).
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
@@ -27,7 +27,7 @@ all() ->
 
 init_per_suite(Config) ->
     _ = os:cmd("epmd -daemon"),
-    Root = temp_dir("bouncer_dist_suite"),
+    Root = temp_dir("noisegate_dist_suite"),
     ok = filelib:ensure_dir(filename:join(Root, "marker")),
     [{suite_root, Root} | Config].
 
@@ -36,7 +36,7 @@ end_per_suite(Config) ->
     ok.
 
 init_per_testcase(Case, Config) ->
-    Root = temp_dir("bouncer_dist_" ++ atom_to_list(Case)),
+    Root = temp_dir("noisegate_dist_" ++ atom_to_list(Case)),
     InitiatorOpts = case Case of
                         rekey -> [{"rekey_after", "frames:50"}];
                         isolated_settings ->
@@ -90,7 +90,7 @@ distribution_roundtrip(Config) ->
     Ref = make_ref(),
     Payload = crypto:strong_rand_bytes(64 * 1024),
     _ = peer:call(PeerA, erlang, spawn,
-                  [?MODULE, echo_sender, [{bouncer_echo, NodeB}, Ref, Payload]]),
+                  [?MODULE, echo_sender, [{noisegate_echo, NodeB}, Ref, Payload]]),
     ?assertEqual({byte_size(Payload), crypto:hash(sha256, Payload)},
                  await_result(PeerA, {result, Ref}, 10000)),
     ok.
@@ -108,7 +108,7 @@ large_transfer_and_full_duplex(Config) ->
               Ref = make_ref(),
               _ = peer:call(PeerA, erlang, spawn,
                             [?MODULE, echo_sender_generated,
-                             [{bouncer_echo, NodeB}, Ref, Size]]),
+                             [{noisegate_echo, NodeB}, Ref, Size]]),
               Expected = await_result(PeerA, {expected, Ref}, 60000),
               ?assertEqual({Size, Expected},
                            await_result(PeerA, {result, Ref}, 60000))
@@ -117,11 +117,11 @@ large_transfer_and_full_duplex(Config) ->
     Start = erlang:monotonic_time(millisecond),
     _ = peer:call(PeerA, erlang, spawn,
                   [?MODULE, echo_sender_generated,
-                   [{bouncer_echo, NodeB}, BigRef, 50 * 1024 * 1024]]),
+                   [{noisegate_echo, NodeB}, BigRef, 50 * 1024 * 1024]]),
     SmallRef = make_ref(),
     Small = <<"reverse-direction-during-large-transfer">>,
     _ = peer:call(PeerB, erlang, spawn,
-                  [?MODULE, echo_sender, [{bouncer_echo, NodeA}, SmallRef, Small]]),
+                  [?MODULE, echo_sender, [{noisegate_echo, NodeA}, SmallRef, Small]]),
     ?assertEqual({byte_size(Small), crypto:hash(sha256, Small)},
                  await_result(PeerB, {result, SmallRef}, 30000)),
     BigHash = await_result(PeerA, {expected, BigRef}, 120000),
@@ -139,15 +139,15 @@ unauthorized_and_name_binding(Config) ->
         start_node(Root, "untrusted", []),
     ok = install_log_capture(PeerC),
     {ok, TempAuthorization} =
-        bouncer_keys:add_peer(NameC, bouncer_keys:public(KeyC),
+        noisegate_keys:add_peer(NameC, noisegate_keys:public(KeyC),
                               #{authorized_dirs => ?config(auth_a, Config),
                                 node_name => ?config(name_a, Config)}),
     ?assertEqual(pang, peer:call(PeerA, net_adm, ping, [NodeC])),
     ?assert(log_contains(PeerC, "Add to the authorized directory")),
     ?assert(log_contains(PeerA, "probably not authorized there")),
     ok = file:delete(TempAuthorization),
-    {ok, _} = bouncer_keys:add_peer(?config(name_a, Config),
-                                    bouncer_keys:public(?config(key_a, Config)),
+    {ok, _} = noisegate_keys:add_peer(?config(name_a, Config),
+                                    noisegate_keys:public(?config(key_a, Config)),
                                     #{authorized_dirs => AuthC,
                                       node_name => NameC}),
     ?assertEqual(pang, peer:call(PeerC, net_adm, ping, [NodeA])),
@@ -159,7 +159,7 @@ unauthorized_and_name_binding(Config) ->
     AuthB = ?config(auth_b, Config),
     KeyA = ?config(key_a, Config),
     ok = file:delete(?config(auth_file_a, Config)),
-    {ok, _} = bouncer_keys:add_peer(WrongName, bouncer_keys:public(KeyA),
+    {ok, _} = noisegate_keys:add_peer(WrongName, noisegate_keys:public(KeyA),
                                     #{authorized_dirs => AuthB,
                                       node_name => ?config(name_b, Config)}),
     ?assertEqual(pang, peer:call(PeerA, net_adm, ping,
@@ -198,7 +198,7 @@ rekey(Config) ->
     Ref = make_ref(),
     _ = peer:call(PeerA, erlang, spawn,
                   [?MODULE, send_many,
-                   [{bouncer_echo, NodeB}, Ref, 10000, 20 * 1024 * 1024]]),
+                   [{noisegate_echo, NodeB}, Ref, 10000, 20 * 1024 * 1024]]),
     ?assertEqual(ok, await_result(PeerB, {batch, Ref}, 120000)),
     ?assertEqual(4, await_result(PeerB, {batch, Ref, 10000}, 120000)),
     LargeHash = await_result(PeerA, {expected, Ref}, 120000),
@@ -233,8 +233,8 @@ idle_disconnect_reconnect_and_revocation(Config) ->
     ?assertEqual(true, peer:call(PeerB, erlang, disconnect_node, [NodeA])),
     ?assertEqual(ok, await_result(PeerB, {nodedown, RevocationRef}, 10000)),
     ?assertEqual(pang, peer:call(PeerB, net_adm, ping, [NodeA])),
-    {ok, _} = bouncer_keys:add_peer(?config(name_b, Config),
-                                    bouncer_keys:public(?config(key_b, Config)),
+    {ok, _} = noisegate_keys:add_peer(?config(name_b, Config),
+                                    noisegate_keys:public(?config(key_b, Config)),
                                     #{authorized_dirs => ?config(auth_a, Config),
                                       node_name => ?config(name_a, Config)}),
     ?assertEqual(pong, peer:call(PeerB, net_adm, ping, [NodeA])),
@@ -277,24 +277,24 @@ logs_do_not_contain_secret_key(Config) ->
       fun({Peer, Key}) ->
               Events = peer:call(Peer, ?MODULE, captured_logs, []),
               Encoded = term_to_binary(Events),
-              Secret = bouncer_keys:secret(Key),
+              Secret = noisegate_keys:secret(Key),
               ?assertEqual(nomatch, binary:match(Encoded, Secret)),
               ?assertEqual(nomatch,
                            binary:match(Encoded, base64:encode(Secret))),
               PersistentTerms = peer:call(Peer, persistent_term, get, []),
               PersistentKeys = [Key0 || {Key0, _Value} <- PersistentTerms],
               ?assertEqual([], [Key0 || Key0 <- PersistentKeys,
-                                        bouncer_key(Key0)]),
+                                        noisegate_key(Key0)]),
               PersistentData = term_to_binary(PersistentTerms),
               ?assertEqual(nomatch, binary:match(PersistentData, Secret)),
               ?assertEqual(nomatch,
                            binary:match(PersistentData, base64:encode(Secret))),
               ?assertEqual(nomatch,
                            binary:match(PersistentData,
-                                        bouncer_keys:public(Key))),
+                                        noisegate_keys:public(Key))),
               ?assertEqual(nomatch,
                            binary:match(PersistentData,
-                                        bouncer_keys:fingerprint(Key)))
+                                        noisegate_keys:fingerprint(Key)))
       end, [{?config(peer_a, Config), ?config(key_a, Config)},
             {?config(peer_b, Config), ?config(key_b, Config)}]),
     ok.
@@ -304,11 +304,11 @@ config_restart(Config) ->
     NodeB = ?config(node_b, Config),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     {ok, OldSettings} =
-        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+        peer:call(PeerA, noisegate_dist_config, connection_settings, []),
     OldLimit = maps:get(limit_handle, maps:get(hs_opts, OldSettings)),
     true = peer:call(PeerA, ets, insert,
-                     [bouncer_dist_config, {send_timeout_ms, 1234}]),
-    OldPid = peer:call(PeerA, erlang, whereis, [bouncer_dist_config]),
+                     [noisegate_dist_config, {send_timeout_ms, 1234}]),
+    OldPid = peer:call(PeerA, erlang, whereis, [noisegate_dist_config]),
     ?assert(is_pid(OldPid)),
     _ = peer:call(PeerA, erlang, exit, [OldPid, kill]),
     NewPid = await_config_restart(PeerA, OldPid,
@@ -316,10 +316,10 @@ config_restart(Config) ->
     ?assert(is_pid(NewPid)),
     ?assertNotEqual(OldPid, NewPid),
     {ok, NewSettings} =
-        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+        peer:call(PeerA, noisegate_dist_config, connection_settings, []),
     ?assertEqual(1234, maps:get(send_timeout_ms, NewSettings)),
     ?assertEqual(OldLimit, maps:get(limit_handle, maps:get(hs_opts, NewSettings))),
-    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
+    ?assertMatch({ok, _}, peer:call(PeerA, noisegate_dist_config, key_info, [])),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
     _ = peer:call(PeerA, erlang, disconnect_node, [NodeB]),
     ?assertEqual(pong, peer:call(PeerA, net_adm, ping, [NodeB], 30000)),
@@ -330,34 +330,34 @@ isolated_settings(Config) ->
     PeerB = ?config(peer_b, Config),
     NodeA = ?config(node_a, Config),
     NodeB = ?config(node_b, Config),
-    {ok, SuiteA} = peer:call(PeerA, bouncer_dist_config, get, [suite]),
-    {ok, SuiteB} = peer:call(PeerB, bouncer_dist_config, get, [suite]),
-    {ok, DirA} = peer:call(PeerA, bouncer_dist_config, get, [dir]),
-    {ok, DirB} = peer:call(PeerB, bouncer_dist_config, get, [dir]),
+    {ok, SuiteA} = peer:call(PeerA, noisegate_dist_config, get, [suite]),
+    {ok, SuiteB} = peer:call(PeerB, noisegate_dist_config, get, [suite]),
+    {ok, DirA} = peer:call(PeerA, noisegate_dist_config, get, [dir]),
+    {ok, DirB} = peer:call(PeerB, noisegate_dist_config, get, [dir]),
     {ok, SettingsA} =
-        peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+        peer:call(PeerA, noisegate_dist_config, connection_settings, []),
     ?assertEqual([],
                  peer:call(PeerA, ets, lookup,
-                           [bouncer_dist_config, connection_settings])),
+                           [noisegate_dist_config, connection_settings])),
     ?assertEqual(atom_to_binary(NodeA, utf8), maps:get(node_name, SettingsA)),
     ?assertEqual(SuiteA, maps:get(suite, maps:get(hs_opts, SettingsA))),
     SendTimeout = maps:get(send_timeout_ms, SettingsA),
     try
         true = peer:call(PeerA, ets, insert,
-                         [bouncer_dist_config, {send_timeout_ms, 1234}]),
+                         [noisegate_dist_config, {send_timeout_ms, 1234}]),
         {ok, ChangedSettings} =
-            peer:call(PeerA, bouncer_dist_config, connection_settings, []),
+            peer:call(PeerA, noisegate_dist_config, connection_settings, []),
         ?assertEqual(1234, maps:get(send_timeout_ms, ChangedSettings)),
         ?assertEqual(1234, maps:get(send_timeout_ms,
                                     maps:get(hs_opts, ChangedSettings)))
     after
         true = peer:call(PeerA, ets, insert,
-                         [bouncer_dist_config,
+                         [noisegate_dist_config,
                           {send_timeout_ms, SendTimeout}])
     end,
-    ?assertMatch({ok, _}, peer:call(PeerA, bouncer_dist_config, key_info, [])),
+    ?assertMatch({ok, _}, peer:call(PeerA, noisegate_dist_config, key_info, [])),
     ?assertEqual({error, not_ready},
-                 peer:call(PeerA, bouncer_dist_config, get, [settings])),
+                 peer:call(PeerA, noisegate_dist_config, get, [settings])),
     ?assertEqual(chachapoly_blake2b, SuiteA),
     ?assertEqual(aesgcm_sha256, SuiteB),
     ?assertNotEqual(DirA, DirB),
@@ -379,9 +379,9 @@ live_settings(Config) ->
                  peer:call(PeerB, ?MODULE, distribution_send_timeout,
                            [local, Port])),
     true = peer:call(PeerA, ets, insert,
-                     [bouncer_dist_config, {send_timeout_ms, 12000}]),
+                     [noisegate_dist_config, {send_timeout_ms, 12000}]),
     true = peer:call(PeerB, ets, insert,
-                     [bouncer_dist_config, {send_timeout_ms, 13000}]),
+                     [noisegate_dist_config, {send_timeout_ms, 13000}]),
     ?assertEqual({ok, 30000},
                  peer:call(PeerA, ?MODULE, distribution_send_timeout,
                            [peer, Port])),
@@ -401,10 +401,10 @@ live_settings(Config) ->
 
 invalid_settings_start(Config) ->
     Root = ?config(case_root, Config),
-    Result = start_bouncer_with_args(
+    Result = start_noisegate_with_args(
                Root, "invalid_suite",
-               ["-bouncer", "suite", "foo",
-                "-bouncer", "dir", filename:join(Root, "invalid_suite_dir")]),
+               ["-noisegate", "suite", "foo",
+                "-noisegate", "dir", filename:join(Root, "invalid_suite_dir")]),
     assert_startup_failure_contains(Result, "suite"),
     assert_startup_failure_contains(Result, "chachapoly_blake2b").
 
@@ -412,17 +412,17 @@ no_key_start(Config) ->
     Root = ?config(case_root, Config),
     Dir = filename:join(Root, "no_key_dir"),
     ok = filelib:ensure_dir(filename:join(Dir, "marker")),
-    Result = start_bouncer_with_args(
+    Result = start_noisegate_with_args(
                Root, "no_key",
-               ["-bouncer", "dir", Dir,
-                "-bouncer", "generate", "false"]),
+               ["-noisegate", "dir", Dir,
+                "-noisegate", "generate", "false"]),
     assert_startup_failure_contains(Result, "no_key").
 
-start_bouncer_with_args(_Root, Suffix, ExtraArgs) ->
-    Name = list_to_atom("bouncer_start_" ++ Suffix ++ "_" ++
+start_noisegate_with_args(_Root, Suffix, ExtraArgs) ->
+    Name = list_to_atom("noisegate_start_" ++ Suffix ++ "_" ++
                         integer_to_list(erlang:unique_integer([positive]))),
     Erl = os:find_executable("erl"),
-    Args = ["-noshell", "-noinput", "+S", "2:2", "-proto_dist", "bouncer",
+    Args = ["-noshell", "-noinput", "+S", "2:2", "-proto_dist", "noisegate",
             "-name", atom_to_list(Name) ++ "@127.0.0.1"] ++
         ExtraArgs ++ ["-pa" | code:get_path()],
     Port = open_port({spawn_executable, Erl},
@@ -446,12 +446,12 @@ collect_startup_output(Port, Acc) ->
     end.
 
 await_config_restart(Peer, OldPid, Deadline) ->
-    case peer:call(Peer, erlang, whereis, [bouncer_dist_config]) of
+    case peer:call(Peer, erlang, whereis, [noisegate_dist_config]) of
         Pid when is_pid(Pid), Pid =/= OldPid ->
-            case peer:call(Peer, bouncer_dist_config, key_info, []) of
+            case peer:call(Peer, noisegate_dist_config, key_info, []) of
                 {ok, _} ->
                     case peer:call(Peer, erlang, whereis,
-                                   [bouncer_dist_config]) of
+                                   [noisegate_dist_config]) of
                         Pid -> Pid;
                         _ -> await_config_restart_retry(Peer, OldPid, Deadline)
                     end;
@@ -472,27 +472,27 @@ await_config_restart_retry(Peer, OldPid, Deadline) ->
     end.
 
 get_value(Key) ->
-    case ets:lookup(bouncer_dist_ct_data, {value, Key}) of
+    case ets:lookup(noisegate_dist_ct_data, {value, Key}) of
         [{{value, Key}, Value}] -> Value;
         [] -> undefined
     end.
 
 captured_logs() ->
-    [Event || {{log, _Id}, Event} <- ets:tab2list(bouncer_dist_ct_data)].
+    [Event || {{log, _Id}, Event} <- ets:tab2list(noisegate_dist_ct_data)].
 
-bouncer_key(bouncer) -> true;
-bouncer_key(Key) when is_atom(Key) ->
-    lists:prefix("bouncer", atom_to_list(Key));
-bouncer_key(<<"bouncer", _/binary>>) ->
+noisegate_key(noisegate) -> true;
+noisegate_key(Key) when is_atom(Key) ->
+    lists:prefix("noisegate", atom_to_list(Key));
+noisegate_key(<<"noisegate", _/binary>>) ->
     true;
-bouncer_key(Key) when is_tuple(Key), tuple_size(Key) > 0 ->
-    bouncer_key(element(1, Key));
-bouncer_key(_) ->
+noisegate_key(Key) when is_tuple(Key), tuple_size(Key) > 0 ->
+    noisegate_key(element(1, Key));
+noisegate_key(_) ->
     false.
 
 setup_echo(Peer) ->
     Pid = peer:call(Peer, erlang, spawn, [?MODULE, echo_loop, []]),
-    true = peer:call(Peer, erlang, register, [bouncer_echo, Pid]),
+    true = peer:call(Peer, erlang, register, [noisegate_echo, Pid]),
     ok.
 
 echo_loop() ->
@@ -627,23 +627,23 @@ stop_pair({PeerA, _NodeA, PeerB, _NodeB}) ->
 
 start_node(Root, Suffix, ExtraSettings) ->
     Unique = integer_to_list(erlang:unique_integer([positive])),
-    Name = list_to_atom("bouncer_" ++ Suffix ++ "_" ++ Unique),
+    Name = list_to_atom("noisegate_" ++ Suffix ++ "_" ++ Unique),
     NodeName = <<(atom_to_binary(Name, utf8))/binary, "@127.0.0.1">>,
     Dir = filename:join(Root, atom_to_list(Name)),
     AuthDir = filename:join(Dir, "authorized.d"),
     ok = filelib:ensure_dir(filename:join(AuthDir, "marker")),
-    {ok, Keys} = bouncer_keys:load_or_generate(
+    {ok, Keys} = noisegate_keys:load_or_generate(
                    NodeName, #{dir => Dir, generate => true}),
     Pa = code:get_path(),
     BouncerArgs =
-        lists:append([["-bouncer", Key, Value] ||
+        lists:append([["-noisegate", Key, Value] ||
                          {Key, Value} <-
                              [{"dir", Dir}, {"authorized_dirs", AuthDir},
                               {"generate", "false"} | ExtraSettings]]),
     Args = ["+S", "2:2",
             "+SDio", "1",
             "+SDcpu", "1:1",
-            "-proto_dist", "bouncer",
+            "-proto_dist", "noisegate",
             "-kernel", "net_ticktime", "8",
             "inet_dist_use_interface", "{127,0,0,1}"] ++ BouncerArgs ++
         ["-pa" | Pa],
@@ -654,7 +654,7 @@ start_node(Root, Suffix, ExtraSettings) ->
     {Peer, Node, NodeName, Dir, AuthDir, Keys}.
 
 start_plain_node(Root) ->
-    Name = list_to_atom("bouncer_plain_" ++
+    Name = list_to_atom("noisegate_plain_" ++
                         integer_to_list(erlang:unique_integer([positive]))),
     Args = ["+S", "2:2",
             "+SDio", "1",
@@ -670,14 +670,14 @@ start_plain_node(Root) ->
     {Peer, Node}.
 
 authorize(Name, Keys, AuthDir) ->
-    {ok, Path} = bouncer_keys:add_peer(Name, bouncer_keys:public(Keys),
+    {ok, Path} = noisegate_keys:add_peer(Name, noisegate_keys:public(Keys),
                                        #{authorized_dirs => AuthDir,
                                          node_name => Name}),
     Path.
 
 install_log_capture(Peer) ->
     ok = peer:call(Peer, logger, add_handler,
-                   [bouncer_dist_ct_capture, ?MODULE, #{level => all}]),
+                   [noisegate_dist_ct_capture, ?MODULE, #{level => all}]),
     ok.
 
 log_contains(Peer, Text) ->
@@ -688,7 +688,7 @@ log_contains(Peer, Text) ->
 
 adding_handler(Config) ->
     ensure_ct_data_table(),
-    ets:delete_all_objects(bouncer_dist_ct_data),
+    ets:delete_all_objects(noisegate_dist_ct_data),
     {ok, Config}.
 
 removing_handler(_Config) ->
@@ -697,15 +697,15 @@ removing_handler(_Config) ->
 log(Event, Config) ->
     _ = Config,
     Id = erlang:unique_integer([positive]),
-    true = ets:insert(bouncer_dist_ct_data, {{log, Id}, Event}),
+    true = ets:insert(noisegate_dist_ct_data, {{log, Id}, Event}),
     ok.
 
 put_value(Key, Value) ->
-    true = ets:insert(bouncer_dist_ct_data, {{value, Key}, Value}),
+    true = ets:insert(noisegate_dist_ct_data, {{value, Key}, Value}),
     ok.
 
 ensure_ct_data_table() ->
-    case ets:whereis(bouncer_dist_ct_data) of
+    case ets:whereis(noisegate_dist_ct_data) of
         undefined ->
             Parent = self(),
             Pid = spawn(?MODULE, ct_data_owner, [Parent]),
@@ -720,7 +720,7 @@ ensure_ct_data_table() ->
     end.
 
 ct_data_owner(Parent) ->
-    _ = ets:new(bouncer_dist_ct_data,
+    _ = ets:new(noisegate_dist_ct_data,
                 [named_table, set, public, {read_concurrency, true}]),
     Parent ! {ct_data_ready, self()},
     receive
