@@ -1,4 +1,4 @@
-# Bouncer Dist (WIP)
+# Noise Gate Erlang Distribution (WIP) ![Noise Gate](doc/noise-gate.svg)
 
 [![CI](https://github.com/mmzeeman/bouncer/actions/workflows/ci.yml/badge.svg)](https://github.com/mmzeeman/bouncer/actions/workflows/ci.yml)
 
