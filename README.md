@@ -14,8 +14,8 @@ Erlang distribution over a Noise protocol transport, built on
 ## Introduction
 
 Noisegate secures Erlang/OTP distribution. Out of the box, Erlang nodes exchange
-all distribution traffic — messages, process signals, RPCs, Mnesia
-replication — over an unencrypted TCP connection. Noisegate replaces the
+all distribution traffic, messages, process signals, RPCs, Mnesia
+replication, over an unencrypted TCP connection. Noisegate replaces the
 standard `inet_tcp` carrier with the [Noise protocol
 framework](https://noiseprotocol.org/), giving the node-to-node channels of
 an Erlang cluster end-to-end encryption and mutual authentication.
