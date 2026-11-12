@@ -66,8 +66,7 @@ parse_header_test() ->
 
 prologue_vector_test() ->
     Header = <<16#42, 16#4e, 16#43, 16#52, 1, 2, 0, 32>>,
-    Expected = <<16#62, 16#6f, 16#75, 16#6e, 16#63, 16#65, 16#72, 16#2f, 16#31,
-                 0, Header/binary, 0, 8, "bob@host">>,
+    Expected = <<"noisegate/1", 0, Header/binary, 0, 8, "bob@host">>,
     ?assertEqual(Expected, noisegate_protocol:prologue(Header, <<"bob@host">>)).
 
 prologue_binds_header_and_target_test() ->

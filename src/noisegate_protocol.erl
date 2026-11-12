@@ -162,7 +162,7 @@ msg3_frame(Msg3) when is_binary(Msg3), byte_size(Msg3) =< ?MAX_FRAME_LENGTH ->
 prologue(<<_:?HELLO_HEADER_SIZE/binary>> = HelloHeader, Target)
   when is_binary(Target),
        byte_size(Target) >= ?MIN_NAME_LENGTH, byte_size(Target) =< ?MAX_NAME_LENGTH ->
-    <<"bouncer/1", 0, HelloHeader/binary, (byte_size(Target)):16, Target/binary>>.
+    <<"noisegate/1", 0, HelloHeader/binary, (byte_size(Target)):16, Target/binary>>.
 
 -spec encode_name(binary()) -> binary().
 encode_name(Name)  when is_binary(Name),
