@@ -1,5 +1,5 @@
-%% Pure wire-format helpers for the bouncer Noise handshake.
--module(bouncer_protocol).
+%% Pure wire-format helpers for the noisegate Noise handshake.
+-module(noisegate_protocol).
 
 -ifdef(TEST).
 -export([unpad/2]).
@@ -174,7 +174,7 @@ encode_name(Name)  when is_binary(Name),
 %% returns the name as a binary without creating an atom.
 -spec decode_name(binary()) -> {ok, binary()} | {error, bad_name | bad_payload}.
 decode_name(<<Len:16, Name:Len/binary>>) ->
-    case bouncer_keys:valid_node_name(Name) of
+    case noisegate_keys:valid_node_name(Name) of
         true -> {ok, Name};
         false -> {error, bad_name}
     end;
@@ -197,7 +197,7 @@ limits() ->
 %%% ==================================================================
 %%
 %% Pure functions only: no sockets, no processes, no application env, no
-%% reading of `-bouncer` flags or OS env. Settings from those layers are
+%% reading of `-noisegate` flags or OS env. Settings from those layers are
 %% handed in by the caller as maps (see sender_policy/1).
 %%
 %% What the fetched enoise source (aeternity/enoise master, 24413c2) offers:
@@ -337,7 +337,7 @@ limits() ->
 %% Validates sender settings and fills in defaults.
 %% 
 %% `Layers` is one settings map or a list of maps, highest precedence first
-%% (the caller passes Opts, then `-bouncer` flags, then env, which gives the
+%% (the caller passes Opts, then `-noisegate` flags, then env, which gives the
 %% precedence Opts > flag > env > default; this function reads none of them
 %% itself). A value is either the native term or the string form used by flags and
 %% env. Unknown keys are ignored.
