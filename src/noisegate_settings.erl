@@ -1,5 +1,5 @@
 %% Settings parsing for the distribution carrier.
--module(bouncer_settings).
+-module(noisegate_settings).
 
 -export([parse/0, parse/1, parse/3]).
 
@@ -17,8 +17,8 @@ parse(_) ->
 parse(Opts, Flags, Env)
   when is_map(Opts), is_map(Flags), is_map(Env) ->
     Layers = [policy_layer(Opts), policy_layer(Flags), policy_layer(Env)],
-    case {bouncer_protocol:sender_policy(Layers),
-          bouncer_protocol:receiver_policy(Layers),
+    case {noisegate_protocol:sender_policy(Layers),
+          noisegate_protocol:receiver_policy(Layers),
           carrier_values(Opts, Flags, Env)}
     of
         {{ok, SenderPolicy}, {ok, ReceiverPolicy}, {ok, Carrier}} ->
@@ -67,7 +67,7 @@ carrier_values(Opts, Flags, Env) ->
     end.
 
 argument_settings() ->
-    case init:get_argument(bouncer) of
+    case init:get_argument(noisegate) of
         {ok, Groups} ->
             lists:foldl(fun add_argument_group/2, #{}, Groups);
         error ->
