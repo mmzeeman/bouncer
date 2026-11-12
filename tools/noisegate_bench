@@ -6,8 +6,8 @@ cd "$ROOT"
 
 ./rebar3 compile >&2
 mkdir -p _build/tools
-erlc -o _build/tools tools/bouncer_bench.erl
+erlc -o _build/tools tools/noisegate_bench.erl
 
-exec erl -noshell -name "bouncer_bench_$$@127.0.0.1" \
+exec erl -noshell -name "noisegate_bench_$$@127.0.0.1" \
     -pa "$ROOT/_build/tools" -pa "$ROOT"/_build/default/lib/*/ebin \
-    -s bouncer_bench main -extra "$@"
+    -s noisegate_bench main -extra "$@"
